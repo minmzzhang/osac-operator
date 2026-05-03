@@ -117,6 +117,17 @@ var _ = Describe("ComputeInstance Controller", func() {
 				}
 				Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 			}
+
+			By("waiting for the manager cache to see the resources")
+			mgrClient := testMcManager.GetLocalManager().GetClient()
+			Eventually(func() error {
+				return mgrClient.Get(ctx, typeNamespacedName, &osacv1alpha1.ComputeInstance{})
+			}).Should(Succeed())
+			Eventually(func(g Gomega) {
+				t := &osacv1alpha1.Tenant{}
+				g.Expect(mgrClient.Get(ctx, types.NamespacedName{Name: tenantName, Namespace: namespaceName}, t)).To(Succeed())
+				g.Expect(t.Status.Phase).To(Equal(osacv1alpha1.TenantPhaseReady))
+			}).Should(Succeed())
 		})
 
 		AfterEach(func() {
