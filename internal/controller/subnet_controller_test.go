@@ -295,6 +295,46 @@ var _ = Describe("SubnetReconciler", func() {
 			// Cleanup
 			_ = k8sClient.Delete(ctx, unmanagedSubnet)
 		})
+
+		It("should still handle delete for unmanaged subnet with finalizer", func() {
+			managedThenUnmanaged := &osacv1alpha1.Subnet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "managed-then-unmanaged",
+					Namespace: "default",
+					Annotations: map[string]string{
+						osacManagementStateAnnotation: ManagementStateUnmanaged,
+					},
+					Finalizers: []string{osacSubnetFinalizer},
+				},
+				Spec: osacv1alpha1.SubnetSpec{
+					VirtualNetwork: "test-vnet-uuid",
+					IPv4CIDR:       "10.0.5.0/24",
+				},
+			}
+			Expect(k8sClient.Create(ctx, managedThenUnmanaged)).To(Succeed())
+
+			key := types.NamespacedName{Name: managedThenUnmanaged.Name, Namespace: managedThenUnmanaged.Namespace}
+
+			mockProvider.triggerDeprovisionFunc = func(
+				ctx context.Context, resource client.Object,
+			) (*provisioning.DeprovisionResult, error) {
+				return &provisioning.DeprovisionResult{
+					Action: provisioning.DeprovisionSkipped,
+				}, nil
+			}
+
+			Expect(k8sClient.Delete(ctx, managedThenUnmanaged)).To(Succeed())
+
+			_, err := reconciler.Reconcile(ctx, mcreconcile.Request{Request: reconcile.Request{
+				NamespacedName: key,
+			}})
+			Expect(err).NotTo(HaveOccurred())
+
+			updatedSubnet := &osacv1alpha1.Subnet{}
+			err = k8sClient.Get(ctx, key, updatedSubnet)
+			Expect(err).To(HaveOccurred())
+			Expect(client.IgnoreNotFound(err)).To(Succeed())
+		})
 	})
 
 	Context("handleProvisioning", func() {

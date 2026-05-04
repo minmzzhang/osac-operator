@@ -395,4 +395,48 @@ var _ = Describe("ClusterOrder Controller", func() {
 		})
 	})
 
+	Context("management-state unmanaged with deletion", func() {
+		ctx := context.Background()
+
+		It("should still handle delete for unmanaged ClusterOrder with finalizer", func() {
+			managedThenUnmanaged := &v1alpha1.ClusterOrder{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "managed-then-unmanaged",
+					Namespace: "default",
+					Annotations: map[string]string{
+						osacManagementStateAnnotation: ManagementStateUnmanaged,
+					},
+					Finalizers: []string{osacFinalizer},
+				},
+				Spec: v1alpha1.ClusterOrderSpec{
+					TemplateID: "test",
+				},
+			}
+			Expect(k8sClient.Create(ctx, managedThenUnmanaged)).To(Succeed())
+
+			key := types.NamespacedName{Name: managedThenUnmanaged.Name, Namespace: managedThenUnmanaged.Namespace}
+
+			noopWebhookClient := &noopWebhookClientForTest{}
+			controllerReconciler := &ClusterOrderReconciler{
+				Client:               k8sClient,
+				apiReader:            k8sClient,
+				Scheme:               k8sClient.Scheme(),
+				ProvisioningProvider: provisioning.NewEDAProvider(noopWebhookClient, "http://noop-create", "http://noop-delete"),
+				MaxJobHistory:        provisioning.DefaultMaxJobHistory,
+			}
+
+			Expect(k8sClient.Delete(ctx, managedThenUnmanaged)).To(Succeed())
+
+			_, err := controllerReconciler.Reconcile(ctx, reconcile.Request{
+				NamespacedName: key,
+			})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &v1alpha1.ClusterOrder{}
+			err = k8sClient.Get(ctx, key, updated)
+			Expect(err).To(HaveOccurred())
+			Expect(client.IgnoreNotFound(err)).To(Succeed())
+		})
+	})
+
 })
