@@ -29,6 +29,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
 
 	osacv1alpha1 "github.com/osac-project/osac-operator/api/v1alpha1"
@@ -500,6 +501,331 @@ var _ = Describe("PublicIPReconciler", func() {
 
 			Expect(updated.Finalizers).To(BeEmpty())
 			Expect(updated.Status.Phase).To(BeEmpty())
+		})
+	})
+
+	Context("ComputeInstance target namespace annotation", func() {
+		const (
+			testCINamespace = "osac-computeinstance"
+			testCIUUID      = "ci-uuid-456"
+			testTenantNS    = "tenant-ns-abc"
+		)
+
+		It("should set publicip-target-namespace annotation when computeInstance is set", func() {
+			ci := &osacv1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-ci",
+					Namespace: testCINamespace,
+					Labels: map[string]string{
+						osacComputeInstanceIDLabel: testCIUUID,
+					},
+				},
+			}
+
+			ipWithCI := &osacv1alpha1.PublicIP{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ip-with-ci",
+					Namespace: testNamespace,
+				},
+				Spec: osacv1alpha1.PublicIPSpec{
+					Pool:            testPoolUUID,
+					ComputeInstance: testCIUUID,
+				},
+			}
+
+			ciClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(ipWithCI, parentPool, ci).
+				WithStatusSubresource(&osacv1alpha1.PublicIP{}, &osacv1alpha1.ComputeInstance{}).
+				Build()
+
+			// Apply status separately — WithStatusSubresource strips status from WithObjects.
+			ci.Status.VirtualMachineReference = &osacv1alpha1.VirtualMachineReferenceType{
+				Namespace:                  testTenantNS,
+				KubeVirtVirtualMachineName: "test-vm",
+			}
+			Expect(ciClient.Status().Update(testCtx, ci)).To(Succeed())
+
+			reconciler.Client = ciClient
+			reconciler.APIReader = ciClient
+			reconciler.ComputeInstanceNamespace = testCINamespace
+
+			key := types.NamespacedName{Name: ipWithCI.Name, Namespace: ipWithCI.Namespace}
+
+			// Pass 1: adds finalizer
+			_, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Pass 2: resolves pool and CI annotations
+			_, err = reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &osacv1alpha1.PublicIP{}
+			Expect(ciClient.Get(testCtx, key, updated)).To(Succeed())
+			Expect(updated.Annotations[osacPublicIPTargetNamespaceAnnotation]).To(Equal(testTenantNS))
+		})
+
+		It("should clear publicip-target-namespace annotation when computeInstance is cleared", func() {
+			ipWithAnnotation := &osacv1alpha1.PublicIP{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ip-clear-ci",
+					Namespace: testNamespace,
+					Annotations: map[string]string{
+						osacPublicIPTargetNamespaceAnnotation: testTenantNS,
+					},
+					Finalizers: []string{osacPublicIPFinalizer},
+				},
+				Spec: osacv1alpha1.PublicIPSpec{
+					Pool: testPoolUUID,
+				},
+			}
+
+			clearClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(ipWithAnnotation, parentPool).
+				WithStatusSubresource(&osacv1alpha1.PublicIP{}).
+				Build()
+
+			reconciler.Client = clearClient
+			reconciler.APIReader = clearClient
+
+			key := types.NamespacedName{Name: ipWithAnnotation.Name, Namespace: ipWithAnnotation.Namespace}
+
+			_, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).NotTo(HaveOccurred())
+
+			updated := &osacv1alpha1.PublicIP{}
+			Expect(clearClient.Get(testCtx, key, updated)).To(Succeed())
+			_, exists := updated.Annotations[osacPublicIPTargetNamespaceAnnotation]
+			Expect(exists).To(BeFalse())
+		})
+
+		It("should requeue when ComputeInstance not found", func() {
+			ipMissingCI := &osacv1alpha1.PublicIP{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ip-missing-ci",
+					Namespace: testNamespace,
+				},
+				Spec: osacv1alpha1.PublicIPSpec{
+					Pool:            testPoolUUID,
+					ComputeInstance: "nonexistent-ci-uuid",
+				},
+			}
+
+			missingClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(ipMissingCI, parentPool).
+				WithStatusSubresource(&osacv1alpha1.PublicIP{}).
+				Build()
+
+			reconciler.Client = missingClient
+			reconciler.APIReader = missingClient
+			reconciler.ComputeInstanceNamespace = testCINamespace
+
+			key := types.NamespacedName{Name: ipMissingCI.Name, Namespace: ipMissingCI.Namespace}
+
+			// Pass 1: adds finalizer
+			_, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Pass 2: CI not found, requeue
+			result, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(defaultPreconditionRequeueInterval))
+		})
+
+		It("should requeue when ComputeInstance has no VirtualMachineReference", func() {
+			ciNoTenant := &osacv1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ci-no-tenant",
+					Namespace: testCINamespace,
+					Labels: map[string]string{
+						osacComputeInstanceIDLabel: testCIUUID,
+					},
+				},
+			}
+
+			ipNoTenant := &osacv1alpha1.PublicIP{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ip-no-tenant",
+					Namespace: testNamespace,
+				},
+				Spec: osacv1alpha1.PublicIPSpec{
+					Pool:            testPoolUUID,
+					ComputeInstance: testCIUUID,
+				},
+			}
+
+			noTenantClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(ipNoTenant, parentPool, ciNoTenant).
+				WithStatusSubresource(&osacv1alpha1.PublicIP{}, &osacv1alpha1.ComputeInstance{}).
+				Build()
+
+			reconciler.Client = noTenantClient
+			reconciler.APIReader = noTenantClient
+			reconciler.ComputeInstanceNamespace = testCINamespace
+
+			key := types.NamespacedName{Name: ipNoTenant.Name, Namespace: ipNoTenant.Namespace}
+
+			// Pass 1: adds finalizer
+			_, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).NotTo(HaveOccurred())
+
+			// Pass 2: CI found but no VirtualMachineReference, requeue
+			result, err := reconciler.Reconcile(testCtx, mcreconcile.Request{Request: ctrl.Request{NamespacedName: key}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.RequeueAfter).To(Equal(defaultPreconditionRequeueInterval))
+		})
+	})
+
+	Context("mapComputeInstanceToPublicIPs", func() {
+		const (
+			mapTestCINamespace = "osac-computeinstance"
+			mapTestCIUUID      = "ci-map-uuid-789"
+		)
+
+		It("should return requests for PublicIPs referencing the ComputeInstance UUID", func() {
+			matchingIP := &osacv1alpha1.PublicIP{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ip-matching",
+					Namespace: testNamespace,
+				},
+				Spec: osacv1alpha1.PublicIPSpec{
+					Pool:            testPoolUUID,
+					ComputeInstance: mapTestCIUUID,
+				},
+			}
+			unrelatedIP := &osacv1alpha1.PublicIP{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ip-unrelated",
+					Namespace: testNamespace,
+				},
+				Spec: osacv1alpha1.PublicIPSpec{
+					Pool:            testPoolUUID,
+					ComputeInstance: "other-ci-uuid",
+				},
+			}
+
+			mapClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(matchingIP, unrelatedIP).
+				Build()
+
+			reconciler.Client = mapClient
+			reconciler.NetworkingNamespace = testNamespace
+			reconciler.ComputeInstanceNamespace = mapTestCINamespace
+
+			ci := &osacv1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-ci",
+					Namespace: mapTestCINamespace,
+					Labels: map[string]string{
+						osacComputeInstanceIDLabel: mapTestCIUUID,
+					},
+				},
+			}
+
+			requests := reconciler.mapComputeInstanceToPublicIPs(testCtx, ci)
+			Expect(requests).To(HaveLen(1))
+			Expect(requests[0].NamespacedName).To(Equal(types.NamespacedName{
+				Name:      "ip-matching",
+				Namespace: testNamespace,
+			}))
+		})
+
+		It("should return nil when ComputeInstance has no UUID label", func() {
+			ci := &osacv1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ci-no-label",
+					Namespace: mapTestCINamespace,
+				},
+			}
+
+			requests := reconciler.mapComputeInstanceToPublicIPs(testCtx, ci)
+			Expect(requests).To(BeNil())
+		})
+
+		It("should return empty when no PublicIPs reference the ComputeInstance", func() {
+			unrelatedIP := &osacv1alpha1.PublicIP{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ip-no-match",
+					Namespace: testNamespace,
+				},
+				Spec: osacv1alpha1.PublicIPSpec{
+					Pool:            testPoolUUID,
+					ComputeInstance: "different-uuid",
+				},
+			}
+
+			mapClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(unrelatedIP).
+				Build()
+
+			reconciler.Client = mapClient
+			reconciler.NetworkingNamespace = testNamespace
+
+			ci := &osacv1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ci-no-matches",
+					Namespace: mapTestCINamespace,
+					Labels: map[string]string{
+						osacComputeInstanceIDLabel: mapTestCIUUID,
+					},
+				},
+			}
+
+			requests := reconciler.mapComputeInstanceToPublicIPs(testCtx, ci)
+			Expect(requests).To(BeEmpty())
+		})
+
+		It("should return multiple requests when several PublicIPs reference the same ComputeInstance", func() {
+			ip1 := &osacv1alpha1.PublicIP{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ip-multi-1",
+					Namespace: testNamespace,
+				},
+				Spec: osacv1alpha1.PublicIPSpec{
+					Pool:            testPoolUUID,
+					ComputeInstance: mapTestCIUUID,
+				},
+			}
+			ip2 := &osacv1alpha1.PublicIP{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ip-multi-2",
+					Namespace: testNamespace,
+				},
+				Spec: osacv1alpha1.PublicIPSpec{
+					Pool:            testPoolUUID,
+					ComputeInstance: mapTestCIUUID,
+				},
+			}
+
+			mapClient := fake.NewClientBuilder().
+				WithScheme(testScheme).
+				WithObjects(ip1, ip2).
+				Build()
+
+			reconciler.Client = mapClient
+			reconciler.NetworkingNamespace = testNamespace
+
+			ci := &osacv1alpha1.ComputeInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "ci-multi",
+					Namespace: mapTestCINamespace,
+					Labels: map[string]string{
+						osacComputeInstanceIDLabel: mapTestCIUUID,
+					},
+				},
+			}
+
+			requests := reconciler.mapComputeInstanceToPublicIPs(testCtx, ci)
+			Expect(requests).To(HaveLen(2))
+			Expect(requests).To(ContainElements(
+				reconcile.Request{NamespacedName: types.NamespacedName{Name: "ip-multi-1", Namespace: testNamespace}},
+				reconcile.Request{NamespacedName: types.NamespacedName{Name: "ip-multi-2", Namespace: testNamespace}},
+			))
 		})
 	})
 

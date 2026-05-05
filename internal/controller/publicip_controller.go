@@ -28,7 +28,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	controllerutil "sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	ctrllog "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	mcbuilder "sigs.k8s.io/multicluster-runtime/pkg/builder"
+	mchandler "sigs.k8s.io/multicluster-runtime/pkg/handler"
 	mcmanager "sigs.k8s.io/multicluster-runtime/pkg/manager"
 	mc "sigs.k8s.io/multicluster-runtime/pkg/multicluster"
 	mcreconcile "sigs.k8s.io/multicluster-runtime/pkg/reconcile"
@@ -51,20 +53,22 @@ const (
 // Phase transitions: "" -> Progressing -> Ready/Failed; on delete: Deleting.
 type PublicIPReconciler struct {
 	client.Client
-	APIReader            client.Reader
-	Scheme               *runtime.Scheme
-	mgr                  mcmanager.Manager
-	NetworkingNamespace  string
-	ProvisioningProvider provisioning.ProvisioningProvider
-	StatusPollInterval   time.Duration
-	MaxJobHistory        int
-	targetCluster        mc.ClusterName
+	APIReader                client.Reader
+	Scheme                   *runtime.Scheme
+	mgr                      mcmanager.Manager
+	NetworkingNamespace      string
+	ComputeInstanceNamespace string
+	ProvisioningProvider     provisioning.ProvisioningProvider
+	StatusPollInterval       time.Duration
+	MaxJobHistory            int
+	targetCluster            mc.ClusterName
 }
 
 // NewPublicIPReconciler creates a new reconciler for PublicIP resources.
 func NewPublicIPReconciler(
 	mgr mcmanager.Manager,
 	networkingNamespace string,
+	computeInstanceNamespace string,
 	provisioningProvider provisioning.ProvisioningProvider,
 	statusPollInterval time.Duration,
 	maxJobHistory int,
@@ -79,16 +83,20 @@ func NewPublicIPReconciler(
 	if maxJobHistory <= 0 {
 		maxJobHistory = provisioning.DefaultMaxJobHistory
 	}
+	if computeInstanceNamespace == "" {
+		computeInstanceNamespace = defaultComputeInstanceNamespace
+	}
 	return &PublicIPReconciler{
-		Client:               mgr.GetLocalManager().GetClient(),
-		APIReader:            mgr.GetLocalManager().GetAPIReader(),
-		Scheme:               mgr.GetLocalManager().GetScheme(),
-		mgr:                  mgr,
-		NetworkingNamespace:  networkingNamespace,
-		ProvisioningProvider: provisioningProvider,
-		StatusPollInterval:   statusPollInterval,
-		MaxJobHistory:        maxJobHistory,
-		targetCluster:        targetCluster,
+		Client:                   mgr.GetLocalManager().GetClient(),
+		APIReader:                mgr.GetLocalManager().GetAPIReader(),
+		Scheme:                   mgr.GetLocalManager().GetScheme(),
+		mgr:                      mgr,
+		NetworkingNamespace:      networkingNamespace,
+		ComputeInstanceNamespace: computeInstanceNamespace,
+		ProvisioningProvider:     provisioningProvider,
+		StatusPollInterval:       statusPollInterval,
+		MaxJobHistory:            maxJobHistory,
+		targetCluster:            targetCluster,
 	}
 }
 
@@ -96,6 +104,7 @@ func NewPublicIPReconciler(
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=publicips/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=publicips/finalizers,verbs=update
 // +kubebuilder:rbac:groups=osac.openshift.io,resources=publicippools,verbs=get;list;watch
+// +kubebuilder:rbac:groups=osac.openshift.io,resources=computeinstances,verbs=get;list;watch
 
 // Reconcile handles create/update/delete for a PublicIP CR.
 // On create/update it ensures a finalizer, resolves the parent pool, and runs provisioning.
@@ -185,12 +194,21 @@ func (r *PublicIPReconciler) handleUpdate(ctx context.Context, publicIP *v1alpha
 		implementationStrategy = defaultPublicIPPoolImplementationStrategy
 	}
 
-	// Annotate the CR so AAP playbooks can select the appropriate role without
-	// having to look up the parent pool themselves.
 	if publicIP.Annotations == nil {
 		publicIP.Annotations = make(map[string]string)
 	}
-	needsUpdate := false
+
+	// Resolve the target namespace for the ComputeInstance attachment, if any.
+	needsUpdate, requeueForCI, err := r.syncComputeInstanceTargetNamespaceAnnotation(ctx, publicIP)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	if requeueForCI {
+		return ctrl.Result{RequeueAfter: defaultPreconditionRequeueInterval}, nil
+	}
+
+	// Annotate the CR so AAP playbooks can select the appropriate role without
+	// having to look up the parent pool themselves.
 	if publicIP.Annotations[osacImplementationStrategyAnnotation] != implementationStrategy {
 		publicIP.Annotations[osacImplementationStrategyAnnotation] = implementationStrategy
 		log.Info("setting implementation-strategy annotation", "strategy", implementationStrategy)
@@ -238,6 +256,62 @@ func (r *PublicIPReconciler) handleUpdate(ctx context.Context, publicIP *v1alpha
 	}
 
 	return r.handleProvisioning(ctx, publicIP)
+}
+
+// syncComputeInstanceTargetNamespaceAnnotation resolves the VM namespace for the
+// ComputeInstance referenced by spec.computeInstance and writes it as an annotation.
+// When spec.computeInstance is cleared, the annotation is removed.
+func (r *PublicIPReconciler) syncComputeInstanceTargetNamespaceAnnotation(
+	ctx context.Context, publicIP *v1alpha1.PublicIP,
+) (changed bool, requeue bool, err error) {
+	log := ctrllog.FromContext(ctx)
+
+	if publicIP.Spec.ComputeInstance == "" {
+		if _, ok := publicIP.Annotations[osacPublicIPTargetNamespaceAnnotation]; ok {
+			delete(publicIP.Annotations, osacPublicIPTargetNamespaceAnnotation)
+			log.Info("cleared publicip-target-namespace annotation")
+			return true, false, nil
+		}
+		return false, false, nil
+	}
+
+	if r.ComputeInstanceNamespace == "" {
+		return false, false, fmt.Errorf(
+			"ComputeInstanceNamespace is not configured; cannot resolve target namespace for computeInstance %q",
+			publicIP.Spec.ComputeInstance,
+		)
+	}
+
+	ciList := &v1alpha1.ComputeInstanceList{}
+	if err := r.List(ctx, ciList,
+		client.InNamespace(r.ComputeInstanceNamespace),
+		client.MatchingLabels{osacComputeInstanceIDLabel: publicIP.Spec.ComputeInstance},
+	); err != nil {
+		return false, false, err
+	}
+	if len(ciList.Items) == 0 {
+		log.Info("ComputeInstance not found, requeueing", "computeInstanceUUID", publicIP.Spec.ComputeInstance)
+		return false, true, nil
+	}
+
+	ci := &ciList.Items[0]
+	if ci.Status.VirtualMachineReference == nil {
+		log.Info("ComputeInstance has no VirtualMachineReference yet, requeueing",
+			"computeInstance", ci.Name, "computeInstanceUUID", publicIP.Spec.ComputeInstance)
+		return false, true, nil
+	}
+
+	targetNamespace := ci.Status.VirtualMachineReference.Namespace
+	if publicIP.Annotations == nil {
+		publicIP.Annotations = make(map[string]string)
+	}
+	if publicIP.Annotations[osacPublicIPTargetNamespaceAnnotation] != targetNamespace {
+		publicIP.Annotations[osacPublicIPTargetNamespaceAnnotation] = targetNamespace
+		log.Info("setting publicip-target-namespace annotation", "targetNamespace", targetNamespace)
+		return true, false, nil
+	}
+
+	return false, false, nil
 }
 
 // handleDelete sets the Deleting phase, runs deprovisioning, and removes the finalizer
@@ -378,12 +452,58 @@ func (r *PublicIPReconciler) handleDeprovisioning(ctx context.Context, publicIP 
 }
 
 // SetupWithManager registers this controller with the multicluster manager.
-// It watches PublicIP CRs in the networking namespace on the local cluster only.
+// It watches PublicIP CRs in the networking namespace on the local cluster only,
+// and also watches ComputeInstance resources so that PublicIPs reconcile immediately
+// when a referenced CI's status changes (e.g., VirtualMachineReference is set).
 func (r *PublicIPReconciler) SetupWithManager(mgr mcmanager.Manager) error {
 	return mcbuilder.ControllerManagedBy(mgr).
 		For(&v1alpha1.PublicIP{},
 			mcbuilder.WithPredicates(NetworkingNamespacePredicate(r.NetworkingNamespace)),
 			mcbuilder.WithEngageWithLocalCluster(true),
 			mcbuilder.WithEngageWithProviderClusters(false)).
+		Watches(
+			&v1alpha1.ComputeInstance{},
+			mchandler.EnqueueRequestsFromMapFunc(r.mapComputeInstanceToPublicIPs),
+			mcbuilder.WithPredicates(ComputeInstanceNamespacePredicate(r.ComputeInstanceNamespace)),
+			mcbuilder.WithEngageWithLocalCluster(true),
+			mcbuilder.WithEngageWithProviderClusters(false),
+		).
 		Complete(r)
+}
+
+// mapComputeInstanceToPublicIPs maps a ComputeInstance change to all PublicIPs
+// that reference it via spec.computeInstance, so the PublicIP reconciler can
+// update the target namespace annotation when the CI's VM reference appears.
+func (r *PublicIPReconciler) mapComputeInstanceToPublicIPs(ctx context.Context, obj client.Object) []reconcile.Request {
+	log := ctrllog.FromContext(ctx)
+
+	ciUUID, exists := obj.GetLabels()[osacComputeInstanceIDLabel]
+	if !exists {
+		return nil
+	}
+
+	publicIPs := &v1alpha1.PublicIPList{}
+	if err := r.List(ctx, publicIPs, client.InNamespace(r.NetworkingNamespace)); err != nil {
+		log.Error(err, "failed to list PublicIPs for ComputeInstance watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for i := range publicIPs.Items {
+		if publicIPs.Items[i].Spec.ComputeInstance == ciUUID {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: client.ObjectKeyFromObject(&publicIPs.Items[i]),
+			})
+		}
+	}
+
+	if len(requests) > 0 {
+		log.Info("mapped ComputeInstance change to PublicIPs",
+			"computeInstance", obj.GetName(),
+			"computeInstanceUUID", ciUUID,
+			"publicIPCount", len(requests),
+		)
+	}
+
+	return requests
 }
