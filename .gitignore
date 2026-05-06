@@ -5,8 +5,9 @@
 *.so
 *.dylib
 bin/*
+console-proxy
 main
-Dockerfile.cross
+Containerfile.cross
 Dockerfile.manifests
 dist/
 

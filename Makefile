@@ -132,6 +132,9 @@ test-kustomize: kustomize ## Validate kustomize configurations (catches missing 
 	$(KUSTOMIZE) build config/rbac > /dev/null
 	$(KUSTOMIZE) build config/samples > /dev/null
 	$(KUSTOMIZE) build config/default > /dev/null
+	$(KUSTOMIZE) build config/console-proxy > /dev/null
+	$(KUSTOMIZE) build config/testing/default > /dev/null
+	$(KUSTOMIZE) build config/testing/console-proxy > /dev/null
 	@echo "All kustomize configurations are valid"
 
 .PHONY: test-smoke
@@ -165,8 +168,9 @@ lint-fix: golangci-lint ## Run golangci-lint linter and perform fixes
 ##@ Build
 
 .PHONY: build
-build: test ## Build manager binary (runs all tests first).
+build: test ## Build manager and console-proxy binaries (runs all tests first).
 	go build -o bin/manager cmd/main.go
+	go build -o bin/console-proxy cmd/console-proxy/main.go
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
@@ -176,11 +180,11 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: image-build
-image-build: ## Build container image with the manager.
+image-build: ## Build container image with manager and console-proxy.
 	$(CONTAINER_TOOL) build -t ${IMG} -f ${CONTAINERFILE} .
 
 .PHONY: image-push
-image-push: ## Push container image with the manager.
+image-push: ## Push container image.
 	$(CONTAINER_TOOL) push ${IMG}
 
 .PHONY: image-run
@@ -204,14 +208,13 @@ kind-load: image-build
 # To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
 PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 .PHONY: docker-buildx
-docker-buildx: ## Build and push container image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
+docker-buildx: ## Build and push container image for cross-platform support
+	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' $(CONTAINERFILE) > $(CONTAINERFILE).cross
 	- $(CONTAINER_TOOL) buildx create --name osac-operator-builder
 	$(CONTAINER_TOOL) buildx use osac-operator-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
+	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f $(CONTAINERFILE).cross .
 	- $(CONTAINER_TOOL) buildx rm osac-operator-builder
-	rm Dockerfile.cross
+	rm $(CONTAINERFILE).cross
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
@@ -233,14 +236,16 @@ install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~
 uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
 	$(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -k config/crd
 
+DEPLOY_OVERLAY ?= config/default
+
 .PHONY: deploy
 deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUBECTL) apply -k config/default
+	$(KUBECTL) apply -k $(DEPLOY_OVERLAY)
 
 .PHONY: undeploy
 undeploy: kustomize ## Undeploy controller from the K8s cluster specified in ~/.kube/config. Call with ignore-not-found=true to ignore resource not found errors during deletion.
-	$(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -k config/default
+	$(KUBECTL) delete --ignore-not-found=$(ignore-not-found) -k $(DEPLOY_OVERLAY)
 
 ##@ Dependencies
 
@@ -260,7 +265,7 @@ GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
 KUSTOMIZE_VERSION ?= v5.4.3
 CONTROLLER_TOOLS_VERSION ?= v0.20.0
 ENVTEST_VERSION ?= release-0.19
-GOLANGCI_LINT_VERSION ?= v2.7.2
+GOLANGCI_LINT_VERSION ?= v2.12.1
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.

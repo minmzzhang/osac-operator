@@ -20,9 +20,8 @@ OSAC operator is a Kubernetes operator that reconciles infrastructure resources 
 - **Never edit** `config/crd/`, `zz_generated.deepcopy.go`, or `internal/api/` — all generated
 - **Always `buf generate`** after updating the module version in `buf.gen.yaml`
 - **Commit message format**: `MGMT-XXXXX: description of change`
-- **Always `make lint` before committing or creating PRs** — CI runs `golangci-lint` (including `goconst`) and will reject PRs with lint failures
-- Run `make test` before committing
-- **Use constants for repeated string literals** — the `goconst` linter flags strings with 3+ occurrences; define them as `const` or package-level `var`
+- **Always `make lint`** after changing any Go code — fix all issues before proceeding
+- Run `make lint test` before committing
 
 ## Development Commands
 
