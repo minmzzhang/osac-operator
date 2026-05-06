@@ -1218,7 +1218,7 @@ var _ = Describe("PublicIPReconciler", func() {
 				},
 			}
 
-			result, err := reconciler.handleProvisioning(testCtx, publicIP)
+			result, err := reconciler.handleProvisioning(testCtx, publicIP, "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeNumerically(">", 0))
 			Expect(result.RequeueAfter).To(BeNumerically("<=", provisioning.BackoffMaxDelay))
@@ -1248,7 +1248,7 @@ var _ = Describe("PublicIPReconciler", func() {
 				},
 			}
 
-			result, err := reconciler.handleProvisioning(testCtx, publicIP)
+			result, err := reconciler.handleProvisioning(testCtx, publicIP, "")
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(1 * time.Second))
 

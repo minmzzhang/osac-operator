@@ -207,6 +207,11 @@ func (r *PublicIPReconciler) handleUpdate(ctx context.Context, publicIP *v1alpha
 		publicIP.Annotations = make(map[string]string)
 	}
 
+	// Capture CI UUID before syncComputeInstanceTargetNamespaceAnnotation, which may
+	// clear spec.computeInstance via handleAutoDetach. handleProvisioning's OnSuccess
+	// needs this to remove the CI detach finalizer after a detach job completes.
+	priorCIUUID := publicIP.Spec.ComputeInstance
+
 	// Resolve the target namespace for the ComputeInstance attachment, if any.
 	needsUpdate, requeueForCI, err := r.syncComputeInstanceTargetNamespaceAnnotation(ctx, publicIP)
 	if err != nil {
@@ -301,7 +306,7 @@ func (r *PublicIPReconciler) handleUpdate(ctx context.Context, publicIP *v1alpha
 		}
 	}
 
-	return r.handleProvisioning(ctx, publicIP)
+	return r.handleProvisioning(ctx, publicIP, priorCIUUID)
 }
 
 // syncComputeInstanceTargetNamespaceAnnotation resolves the VM namespace for the
@@ -425,7 +430,13 @@ func (r *PublicIPReconciler) handleAutoDetach(
 		// D-11: clear stale reference, no AAP call needed. State stays Failed.
 		log.Info("clearing stale ComputeInstance reference on Failed PublicIP",
 			"computeInstanceUUID", publicIP.Spec.ComputeInstance)
+		ciUUID := publicIP.Spec.ComputeInstance
 		publicIP.Spec.ComputeInstance = ""
+		// No AAP detach job runs for Failed state, so OnSuccess will never fire.
+		// Attempt CI finalizer removal directly.
+		if err := r.maybeRemoveCIFinalizer(ctx, ciUUID); err != nil {
+			return autoDetachResult{}, err
+		}
 		return autoDetachResult{specChanged: true}, nil
 
 	case v1alpha1.PublicIPStateAttaching:
@@ -534,16 +545,13 @@ func (r *PublicIPReconciler) handleDelete(ctx context.Context, publicIP *v1alpha
 
 // handleProvisioning delegates to the shared provisioning lifecycle, which triggers
 // an AAP job (e.g., osac-create-public-ip) and polls its status until completion.
-func (r *PublicIPReconciler) handleProvisioning(ctx context.Context, publicIP *v1alpha1.PublicIP) (ctrl.Result, error) {
+func (r *PublicIPReconciler) handleProvisioning(ctx context.Context, publicIP *v1alpha1.PublicIP, priorCIUUID string) (ctrl.Result, error) {
 	log := ctrllog.FromContext(ctx)
 
 	if r.ProvisioningProvider == nil {
 		log.Info("no provisioning provider configured, skipping provisioning")
 		return ctrl.Result{}, nil
 	}
-
-	// Capture CI UUID before provisioning (may be cleared by auto-detach flow)
-	priorCIUUID := publicIP.Spec.ComputeInstance
 
 	return provisioning.RunProvisioningLifecycle(ctx, r.ProvisioningProvider, publicIP,
 		&provisioning.State{Jobs: &publicIP.Status.Jobs, DesiredConfigVersion: publicIP.Status.DesiredConfigVersion},
