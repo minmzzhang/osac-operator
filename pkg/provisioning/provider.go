@@ -11,17 +11,6 @@ import (
 	"github.com/osac-project/osac-operator/api/v1alpha1"
 )
 
-// ProviderType represents the type of provisioning provider.
-type ProviderType string
-
-const (
-	// ProviderTypeEDA identifies the EDA webhook-based provider
-	ProviderTypeEDA ProviderType = "eda"
-
-	// ProviderTypeAAP identifies the AAP REST API direct provider
-	ProviderTypeAAP ProviderType = "aap"
-)
-
 // ProvisionResult contains the result of triggering a provision operation.
 type ProvisionResult struct {
 	// JobID is the identifier for the triggered job
@@ -70,9 +59,7 @@ type DeprovisionResult struct {
 	ProvisionJobStatus *ProvisionStatus
 }
 
-// ProvisioningProvider abstracts the mechanism for triggering infrastructure automation
-// and retrieving job status. This interface allows multiple implementations (e.g., EDA webhooks,
-// direct AAP API integration) to coexist and be selected via configuration.
+// ProvisioningProvider abstracts triggering infrastructure automation via AAP and retrieving job status.
 type ProvisioningProvider interface {
 	// TriggerProvision starts provisioning for a resource.
 	// Returns a ProvisionResult with job details and initial state.
@@ -88,8 +75,6 @@ type ProvisioningProvider interface {
 	TriggerDeprovision(ctx context.Context, resource client.Object) (*DeprovisionResult, error)
 
 	// GetDeprovisionStatus checks the status of a deprovisioning job.
-	// For providers that use external signals (like EDA checking finalizers),
-	// the resource parameter allows checking completion status.
 	GetDeprovisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error)
 
 	// Name returns the provider name for logging and identification.

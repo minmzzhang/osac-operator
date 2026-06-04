@@ -35,7 +35,6 @@ var _ = Describe("NewProvider", func() {
 			}
 
 			provider, err := provisioning.NewProvider(provisioning.ProviderConfig{
-				ProviderType:        provisioning.ProviderTypeAAP,
 				AAPClient:           aapClient,
 				ProvisionTemplate:   "my-custom-provision",
 				DeprovisionTemplate: "",
@@ -64,7 +63,6 @@ var _ = Describe("NewProvider", func() {
 			}
 
 			provider, err := provisioning.NewProvider(provisioning.ProviderConfig{
-				ProviderType:        provisioning.ProviderTypeAAP,
 				AAPClient:           aapClient,
 				ProvisionTemplate:   "my-custom-provision",
 				DeprovisionTemplate: "",
@@ -95,7 +93,6 @@ var _ = Describe("NewProvider", func() {
 			}
 
 			provider, err := provisioning.NewProvider(provisioning.ProviderConfig{
-				ProviderType:   provisioning.ProviderTypeAAP,
 				AAPClient:      aapClient,
 				TemplatePrefix: "osac",
 			})
@@ -123,7 +120,6 @@ var _ = Describe("NewProvider", func() {
 			}
 
 			provider, err := provisioning.NewProvider(provisioning.ProviderConfig{
-				ProviderType:        provisioning.ProviderTypeAAP,
 				AAPClient:           aapClient,
 				ProvisionTemplate:   "my-provision",
 				DeprovisionTemplate: "my-deprovision",
@@ -144,8 +140,7 @@ var _ = Describe("NewProvider", func() {
 	Context("AAP provider with no templates and no prefix", func() {
 		It("should return error on trigger", func() {
 			provider, err := provisioning.NewProvider(provisioning.ProviderConfig{
-				ProviderType: provisioning.ProviderTypeAAP,
-				AAPClient:    aapClient,
+				AAPClient: aapClient,
 			})
 			Expect(err).NotTo(HaveOccurred())
 

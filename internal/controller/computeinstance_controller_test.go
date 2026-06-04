@@ -144,7 +144,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 
 			By("Reconciling the deleted resource")
 			Eventually(func() error {
-				controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+				controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 				_, err := controllerReconciler.Reconcile(ctx, mcreconcile.Request{Request: reconcile.Request{
 					NamespacedName: typeNamespacedName,
 				}})
@@ -158,7 +158,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			}
 		})
 		It("should successfully reconcile the resource", func() {
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 
 			// Reconcile inside Eventually: the first call may requeue if
 			// the envtest cache has not yet propagated the Tenant status
@@ -206,7 +206,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			key := types.NamespacedName{Name: managedThenUnmanaged.Name, Namespace: namespaceName}
 
 			mockProv := &mockProvisioningProvider{
-				name: string(provisioning.ProviderTypeAAP),
+				name: "aap",
 				triggerDeprovisionFunc: func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
 					return &provisioning.DeprovisionResult{
 						Action: provisioning.DeprovisionSkipped,
@@ -1023,7 +1023,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 
 			// Wait for the CI to appear in the controller's cache before calling Reconcile
 			// directly. Without this, r.Get() inside Reconcile returns NotFound (cache miss)
@@ -1066,7 +1066,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 
 			triggerCount := 0
 			provider := &mockProvisioningProvider{
-				name: string(provisioning.ProviderTypeAAP),
+				name: "aap",
 				triggerProvisionFunc: func(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error) {
 					triggerCount++
 					return &provisioning.ProvisionResult{
@@ -1115,7 +1115,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 
 			// Wait for the CI to appear in the controller's cache before calling Reconcile directly.
 			Eventually(func() error {
@@ -1530,7 +1530,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fakeRecorder := events.NewFakeRecorder(100)
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 			controllerReconciler.Recorder = fakeRecorder
 
 			Eventually(func() error {
@@ -1589,7 +1589,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
 			fakeRecorder := events.NewFakeRecorder(100)
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 			controllerReconciler.Recorder = fakeRecorder
 
 			Eventually(func() error {
@@ -1711,7 +1711,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 				return mgrClient.Get(ctx, nn, &osacv1alpha1.ComputeInstance{})
 			}).Should(Succeed())
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 
 			// First reconcile: sets tenant reference
 			_, err := controllerReconciler.Reconcile(ctx, mcreconcile.Request{Request: reconcile.Request{NamespacedName: nn}})
@@ -1778,7 +1778,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 				return mgrClient.Get(ctx, nn, &osacv1alpha1.ComputeInstance{})
 			}).Should(Succeed())
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 
 			// Reconcile should fail because tenant does not exist
 			_, err := controllerReconciler.Reconcile(ctx, mcreconcile.Request{Request: reconcile.Request{NamespacedName: nn}})
@@ -1828,7 +1828,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 			Eventually(func() error {
 				return controllerReconciler.Client.Get(ctx, nn, &osacv1alpha1.ComputeInstance{})
 			}, 2*time.Second, 10*time.Millisecond).Should(Succeed())
@@ -1881,7 +1881,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 			Eventually(func() error {
 				return controllerReconciler.Client.Get(ctx, nn, &osacv1alpha1.ComputeInstance{})
 			}, 2*time.Second, 10*time.Millisecond).Should(Succeed())
@@ -1935,7 +1935,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 			Eventually(func() error {
 				return controllerReconciler.Client.Get(ctx, nn, &osacv1alpha1.ComputeInstance{})
 			}, 2*time.Second, 10*time.Millisecond).Should(Succeed())
@@ -2121,7 +2121,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 
 			Eventually(func() error {
 				return controllerReconciler.Client.Get(ctx, nn, &osacv1alpha1.ComputeInstance{})
@@ -2162,7 +2162,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 
 			Eventually(func() error {
 				return controllerReconciler.Client.Get(ctx, nn, &osacv1alpha1.ComputeInstance{})
@@ -2198,7 +2198,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 				_ = k8sClient.Delete(ctx, subnet)
 			}()
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 
 			// Wait for Subnet CR to be cached by the reconciler's manager cache
 			Eventually(func() error {
@@ -2259,7 +2259,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 				_ = k8sClient.Delete(ctx, subnet)
 			}()
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 
 			// Wait for Subnet CR to be cached by the reconciler's manager cache
 			Eventually(func() error {
@@ -2330,7 +2330,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 
 			Eventually(func() error {
 				return controllerReconciler.Client.Get(ctx, nn, &osacv1alpha1.ComputeInstance{})
@@ -2641,7 +2641,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			}
 			Expect(k8sClient.Create(ctx, resource)).To(Succeed())
 
-			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: string(provisioning.ProviderTypeAAP)}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
+			controllerReconciler := NewComputeInstanceReconciler(testMcManager, "", namespaceName, "", &mockProvisioningProvider{name: "aap"}, 100*time.Millisecond, 0, mcmanager.LocalCluster)
 
 			Eventually(func() error {
 				return controllerReconciler.Client.Get(ctx, nn, &osacv1alpha1.ComputeInstance{})

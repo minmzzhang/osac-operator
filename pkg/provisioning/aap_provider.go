@@ -92,54 +92,6 @@ func (p *AAPProvider) resolveTemplateName(action string, resource client.Object)
 	return "", fmt.Errorf("%s template not configured", action)
 }
 
-// isResourceReady returns true if the resource is in a Ready/Running state.
-func isResourceReady(resource client.Object) (bool, error) {
-	switch r := resource.(type) {
-	case *v1alpha1.ComputeInstance:
-		return r.Status.Phase == v1alpha1.ComputeInstancePhaseRunning, nil
-	case *v1alpha1.ClusterOrder:
-		return r.Status.Phase == v1alpha1.ClusterOrderPhaseReady, nil
-	default:
-		return false, fmt.Errorf("unsupported resource type: %T", resource)
-	}
-}
-
-// isResourceFailed returns true if the resource is in a Failed state.
-func isResourceFailed(resource client.Object) (bool, error) {
-	switch r := resource.(type) {
-	case *v1alpha1.ComputeInstance:
-		return r.Status.Phase == v1alpha1.ComputeInstancePhaseFailed, nil
-	case *v1alpha1.ClusterOrder:
-		return r.Status.Phase == v1alpha1.ClusterOrderPhaseFailed, nil
-	default:
-		return false, fmt.Errorf("unsupported resource type: %T", resource)
-	}
-}
-
-// isResourceDeleting returns true if the resource is in a Deleting state.
-func isResourceDeleting(resource client.Object) (bool, error) {
-	switch r := resource.(type) {
-	case *v1alpha1.ComputeInstance:
-		return r.Status.Phase == v1alpha1.ComputeInstancePhaseDeleting, nil
-	case *v1alpha1.ClusterOrder:
-		return r.Status.Phase == v1alpha1.ClusterOrderPhaseDeleting, nil
-	default:
-		return false, fmt.Errorf("unsupported resource type: %T", resource)
-	}
-}
-
-// getResourcePhase returns the phase as a string for logging.
-func getResourcePhase(resource client.Object) (string, error) {
-	switch r := resource.(type) {
-	case *v1alpha1.ComputeInstance:
-		return string(r.Status.Phase), nil
-	case *v1alpha1.ClusterOrder:
-		return string(r.Status.Phase), nil
-	default:
-		return "", fmt.Errorf("unsupported resource type: %T", resource)
-	}
-}
-
 // TriggerProvision triggers provisioning via AAP API.
 // Autodetects whether the template is a job_template or workflow_job_template.
 func (p *AAPProvider) TriggerProvision(ctx context.Context, resource client.Object) (*ProvisionResult, error) {
@@ -170,8 +122,7 @@ func (p *AAPProvider) GetProvisionStatus(ctx context.Context, resource client.Ob
 }
 
 // TriggerDeprovision attempts to start deprovisioning for a resource.
-// It checks whether a running provision job needs to be cancelled first
-// (including EDA provider switch scenarios for ComputeInstance).
+// It checks whether a running provision job needs to be cancelled first.
 func (p *AAPProvider) TriggerDeprovision(ctx context.Context, resource client.Object) (*DeprovisionResult, error) {
 	ready, provisionStatus, err := p.isReadyForDeprovision(ctx, resource)
 	if err != nil {
@@ -219,53 +170,6 @@ func (p *AAPProvider) isReadyForDeprovision(ctx context.Context, resource client
 
 	log.Info("checking provision job before deprovision", "jobID", latestProvisionJob.JobID, "currentState", latestProvisionJob.State)
 
-	// Check if this is an EDA job ID (provider switch scenario)
-	// EDA job IDs start with "eda-webhook-", AAP job IDs are numeric
-	if IsEDAJobID(latestProvisionJob.JobID) {
-		// EDA jobs can't be queried via AAP API or cancelled by AAP provider.
-		// For ComputeInstance/ClusterOrder, we check the resource phase to determine
-		// if provisioning is complete. For other resources (e.g., Tenant), we treat
-		// EDA jobs as terminal since EDA is only used for CI/ClusterOrder today.
-		phase, err := getResourcePhase(resource)
-		if err != nil {
-			log.Error(err, "EDA provision job on unsupported resource type, treating as terminal", "jobID", latestProvisionJob.JobID)
-			return true, nil, nil
-		}
-		log.Info("detected EDA provision job (provider switch scenario), checking resource phase", "jobID", latestProvisionJob.JobID, "phase", phase)
-
-		// Ready/Running or Failed - provision is done, ready to deprovision
-		if ready, err := isResourceReady(resource); err != nil {
-			return false, nil, err
-		} else if ready {
-			log.Info("EDA provision succeeded, ready to deprovision", "jobID", latestProvisionJob.JobID, "phase", phase)
-			return true, nil, nil
-		}
-		if failed, err := isResourceFailed(resource); err != nil {
-			return false, nil, err
-		} else if failed {
-			log.Info("EDA provision failed, ready to deprovision", "jobID", latestProvisionJob.JobID, "phase", phase)
-			return true, nil, nil
-		}
-
-		// Deleting phase - check if deprovision job already exists
-		if deleting, err := isResourceDeleting(resource); err != nil {
-			return false, nil, err
-		} else if deleting {
-			latestDeprovisionJob := FindLatestJobByType(jobs, v1alpha1.JobTypeDeprovision)
-			if latestDeprovisionJob == nil {
-				log.Info("EDA provision complete, deletion initiated, ready to create deprovision job", "jobID", latestProvisionJob.JobID, "phase", phase)
-				return true, nil, nil
-			}
-			log.Info("EDA provision complete, deprovision job already exists", "jobID", latestProvisionJob.JobID, "deprovisionJobID", latestDeprovisionJob.JobID, "phase", phase)
-			return false, nil, nil
-		}
-
-		// Starting/Progressing phase - still provisioning, not ready
-		log.Info("EDA provision still in progress", "jobID", latestProvisionJob.JobID, "phase", phase)
-		return false, nil, nil
-	}
-
-	// AAP job - query status from AAP API
 	status, err := p.GetProvisionStatus(ctx, resource, latestProvisionJob.JobID)
 	if err != nil {
 		var notFoundErr *aap.NotFoundError
@@ -302,19 +206,19 @@ func (p *AAPProvider) isReadyForDeprovision(ctx context.Context, resource client
 }
 
 // cancelProvisionJob attempts to cancel a running provision job via AAP API.
-// Returns nil if cancellation was initiated successfully or if the job is already in a terminal state (HTTP 405).
+// Returns nil if cancellation was initiated (HTTP 202). Returns *aap.MethodNotAllowedError when
+// AAP responds with HTTP 405 (job already terminal); the caller proceeds to deprovision immediately.
 // Note: Cancellation is asynchronous. The job status should be polled to confirm termination.
 func (p *AAPProvider) cancelProvisionJob(ctx context.Context, jobID string) error {
-	// Attempt to cancel the job
-	// HTTP 202 → cancellation initiated
-	// HTTP 405 → job already terminal (not an error)
+	// HTTP 202 → cancellation initiated (nil)
+	// HTTP 405 → job already terminal (*aap.MethodNotAllowedError, handled by caller)
 	err := p.client.CancelJob(ctx, jobID)
 	if err != nil {
 		// Check if error is "Method not allowed" (405) - indicates job already terminal
 		var methodNotAllowedErr *aap.MethodNotAllowedError
 		if errors.As(err, &methodNotAllowedErr) {
-			// Job is already in terminal state, nothing to cancel
-			return nil
+			// Propagate 405 so the caller can proceed immediately instead of waiting another poll.
+			return err
 		}
 		return fmt.Errorf("failed to cancel job: %w", err)
 	}
@@ -426,20 +330,9 @@ func mapAAPStatusToJobState(aapStatus string) v1alpha1.JobState {
 
 // extractExtraVars extracts extra variables from a resource to pass to AAP.
 //
-// NOTE: The current AAP templates (osac-create-compute-instance, osac-delete-compute-instance)
-// were designed to be triggered by EDA (Event-Driven Ansible) and expect the full Kubernetes resource
-// object wrapped in an EDA event structure. To maintain compatibility with existing templates, we
-// serialize the entire resource object and wrap it in the ansible_eda.event.payload structure.
-//
-// EDA sends the complete resource object which allows playbooks to access fields like:
-//
-//	ansible_eda.event.payload.spec.templateID
-//	ansible_eda.event.payload.spec.templateParameters
-//	ansible_eda.event.payload.metadata.name
-//	ansible_eda.event.payload.metadata.namespace
-//
-// Future improvement: When/if we migrate away from EDA-triggered templates, this wrapper can be
-// removed and parameters can be passed directly as flat key-value pairs.
+// AAP templates expect the Kubernetes resource wrapped in an ansible_eda.event.payload
+// structure. Playbooks read fields such as ansible_eda.event.payload.spec and
+// ansible_eda.event.payload.metadata.
 func extractExtraVars(ctx context.Context, resource client.Object) (map[string]any, error) {
 	// Convert the resource to map using JSON marshaling (respects JSON tags)
 	resourceMap, err := serializeResource(resource)
@@ -460,7 +353,7 @@ func extractExtraVars(ctx context.Context, resource client.Object) (map[string]a
 		event["tenant_storage_classes"] = scList
 	}
 
-	// Wrap in EDA event structure for compatibility with EDA-designed templates
+	// Wrap in ansible_eda.event structure for AAP template compatibility.
 	return map[string]any{
 		"ansible_eda": map[string]any{
 			"event": event,
@@ -469,7 +362,6 @@ func extractExtraVars(ctx context.Context, resource client.Object) (map[string]a
 }
 
 // serializeResource converts a Kubernetes resource to a map using JSON marshaling.
-// This respects the struct's JSON tags and provides the same structure as EDA events.
 func serializeResource(resource client.Object) (map[string]any, error) {
 	// Marshal to JSON
 	jsonBytes, err := json.Marshal(resource)

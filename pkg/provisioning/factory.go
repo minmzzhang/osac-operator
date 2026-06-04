@@ -5,17 +5,8 @@ import (
 	"time"
 )
 
-// ProviderConfig contains configuration for creating a provisioning provider.
+// ProviderConfig contains configuration for creating the AAP provisioning provider.
 type ProviderConfig struct {
-	// ProviderType specifies which provider to create (ProviderTypeEDA or ProviderTypeAAP)
-	ProviderType ProviderType
-
-	// EDA provider configuration
-	WebhookClient      WebhookClient
-	ProvisionWebhook   string
-	DeprovisionWebhook string
-
-	// AAP provider configuration
 	AAPClient           AAPClient
 	ProvisionTemplate   string
 	DeprovisionTemplate string
@@ -27,35 +18,17 @@ type ProviderConfig struct {
 	TemplatePrefix string
 }
 
-// NewProvider creates a provisioning provider based on the configuration.
+// NewProvider creates an AAP provisioning provider from the configuration.
 func NewProvider(config ProviderConfig) (ProvisioningProvider, error) {
-	switch config.ProviderType {
-	case ProviderTypeEDA:
-		if config.WebhookClient == nil {
-			return nil, fmt.Errorf("EDA provider requires WebhookClient")
-		}
-		if config.ProvisionWebhook == "" || config.DeprovisionWebhook == "" {
-			return nil, fmt.Errorf("EDA provider requires both ProvisionWebhook and DeprovisionWebhook")
-		}
-		return NewEDAProvider(
-			config.WebhookClient,
-			config.ProvisionWebhook, config.DeprovisionWebhook,
-		), nil
-
-	case ProviderTypeAAP:
-		if config.AAPClient == nil {
-			return nil, fmt.Errorf("AAP provider requires AAPClient")
-		}
-		return &AAPProvider{
-			client:              config.AAPClient,
-			provisionTemplate:   config.ProvisionTemplate,
-			deprovisionTemplate: config.DeprovisionTemplate,
-			templatePrefix:      config.TemplatePrefix,
-		}, nil
-
-	default:
-		return nil, fmt.Errorf("unknown provider type: %s", config.ProviderType)
+	if config.AAPClient == nil {
+		return nil, fmt.Errorf("AAP provider requires AAPClient")
 	}
+	return &AAPProvider{
+		client:              config.AAPClient,
+		provisionTemplate:   config.ProvisionTemplate,
+		deprovisionTemplate: config.DeprovisionTemplate,
+		templatePrefix:      config.TemplatePrefix,
+	}, nil
 }
 
 const (

@@ -132,7 +132,7 @@ func (p *controllableProvider) GetDeprovisionStatus(ctx context.Context, resourc
 }
 
 func (p *controllableProvider) Name() string {
-	return string(provisioning.ProviderTypeAAP)
+	return "aap"
 }
 
 // setProvisionJobState updates the provision job state (thread-safe)

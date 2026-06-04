@@ -72,12 +72,11 @@ var _ = Describe("ClusterOrder Controller", func() {
 		})
 		It("should successfully reconcile the resource", func() {
 			By("Reconciling the created resource")
-			noopWebhookClient := &noopWebhookClientForTest{}
 			controllerReconciler := &ClusterOrderReconciler{
 				Client:               k8sClient,
 				apiReader:            k8sClient,
 				Scheme:               k8sClient.Scheme(),
-				ProvisioningProvider: provisioning.NewEDAProvider(noopWebhookClient, "http://noop-create", "http://noop-delete"),
+				ProvisioningProvider: noopProvisioningProvider{},
 				MaxJobHistory:        provisioning.DefaultMaxJobHistory,
 			}
 
@@ -416,12 +415,11 @@ var _ = Describe("ClusterOrder Controller", func() {
 
 			key := types.NamespacedName{Name: managedThenUnmanaged.Name, Namespace: managedThenUnmanaged.Namespace}
 
-			noopWebhookClient := &noopWebhookClientForTest{}
 			controllerReconciler := &ClusterOrderReconciler{
 				Client:               k8sClient,
 				apiReader:            k8sClient,
 				Scheme:               k8sClient.Scheme(),
-				ProvisioningProvider: provisioning.NewEDAProvider(noopWebhookClient, "http://noop-create", "http://noop-delete"),
+				ProvisioningProvider: noopProvisioningProvider{},
 				MaxJobHistory:        provisioning.DefaultMaxJobHistory,
 			}
 

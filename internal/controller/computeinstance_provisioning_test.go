@@ -476,7 +476,7 @@ var _ = Describe("ComputeInstance Provisioning", func() {
 				osacComputeInstanceManagementStateAnnotation: ManagementStateManual,
 			}
 			provider := &mockProvisioningProvider{
-				name: string(provisioning.ProviderTypeAAP),
+				name: "aap",
 			}
 			reconciler.ProvisioningProvider = provider
 
