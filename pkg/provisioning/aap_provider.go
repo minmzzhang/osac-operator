@@ -217,8 +217,8 @@ func (p *AAPProvider) cancelProvisionJob(ctx context.Context, jobID string) erro
 		// Check if error is "Method not allowed" (405) - indicates job already terminal
 		var methodNotAllowedErr *aap.MethodNotAllowedError
 		if errors.As(err, &methodNotAllowedErr) {
-			// Job is already in terminal state, nothing to cancel
-			return nil
+			// Propagate 405 so the caller can proceed immediately instead of waiting another poll.
+			return err
 		}
 		return fmt.Errorf("failed to cancel job: %w", err)
 	}

@@ -588,6 +588,46 @@ var _ = Describe("AAPProvider", func() {
 				Expect(result.ProvisionJobStatus.State).To(Equal(v1alpha1.JobStateRunning))
 			})
 		})
+
+		Context("when cancel returns 405 because job already became terminal", func() {
+			BeforeEach(func() {
+				provider = provisioning.NewAAPProvider(aapClient, "provision-job", "deprovision-job")
+				aapClient.getTemplateFunc = func(ctx context.Context, templateName string) (*aap.Template, error) {
+					return &aap.Template{ID: 1, Name: templateName, Type: aap.TemplateTypeJob}, nil
+				}
+				aapClient.launchJobTemplateFunc = func(ctx context.Context, req aap.LaunchJobTemplateRequest) (*aap.LaunchJobTemplateResponse, error) {
+					Expect(req.TemplateName).To(Equal("deprovision-job"))
+					return &aap.LaunchJobTemplateResponse{JobID: 999}, nil
+				}
+				instance.Status.Phase = v1alpha1.ComputeInstancePhaseStarting
+				instance.Status.Jobs = []v1alpha1.JobStatus{
+					{
+						JobID:     "9876",
+						Type:      v1alpha1.JobTypeProvision,
+						State:     v1alpha1.JobStateRunning,
+						Timestamp: metav1.NewTime(time.Now().UTC().Add(-5 * time.Minute)),
+					},
+				}
+				aapClient.getJobFunc = func(ctx context.Context, jobID string) (*aap.Job, error) {
+					return &aap.Job{
+						ID:       9876,
+						Status:   "running",
+						Started:  time.Now().UTC().Add(-5 * time.Minute),
+						Finished: time.Time{},
+					}, nil
+				}
+				aapClient.cancelJobFunc = func(ctx context.Context, jobID string) error {
+					return &aap.MethodNotAllowedError{Operation: "cancel job " + jobID}
+				}
+			})
+
+			It("should proceed to deprovision immediately", func() {
+				result, err := provider.TriggerDeprovision(ctx, instance)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(result.Action).To(Equal(provisioning.DeprovisionTriggered))
+				Expect(result.JobID).To(Equal("999"))
+			})
+		})
 	})
 
 	Describe("GetDeprovisionStatus", func() {
