@@ -14,7 +14,9 @@ updates:
   commit-message:
     prefix: "NO-ISSUE"
 - package-ecosystem: "gomod"
-  directory: "/"
+  directories:
+    - "/"
+    - "/api"
   schedule:
     # Check for updates to Go modules every week
     interval: "weekly"
