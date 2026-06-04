@@ -468,8 +468,7 @@ func (r *ComputeInstanceReconciler) handleDeprovisioning(ctx context.Context, in
 	val, exists := instance.Annotations[osacComputeInstanceManagementStateAnnotation]
 	if exists && val == ManagementStateManual {
 		log.Info("skipping deprovisioning due to management-state annotation", "management-state", val)
-		// For EDA: AAP playbook handles finalizer removal
-		// For AAP Direct: handleDelete() removes base finalizer
+		// handleDelete() removes the base finalizer when deprovision is skipped.
 		return ctrl.Result{}, nil
 	}
 
@@ -513,7 +512,7 @@ func (r *ComputeInstanceReconciler) handleDeprovisioning(ctx context.Context, in
 			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
 
 		case provisioning.DeprovisionSkipped:
-			// Provider determined deprovisioning not needed (e.g., EDA without finalizer)
+			// Provider determined deprovisioning not needed.
 			log.Info("provider skipped deprovisioning")
 			return ctrl.Result{}, nil
 
@@ -569,8 +568,7 @@ func (r *ComputeInstanceReconciler) handleDeprovisioning(ctx context.Context, in
 	// Job reached terminal state (Succeeded, Failed, or Canceled)
 	if status.State.IsSuccessful() {
 		log.Info("deprovision job succeeded", "jobID", latestDeprovisionJob.JobID)
-		// For EDA: AAP playbook removes AAP finalizer on success
-		// For AAP Direct: handleDelete() removes base finalizer
+		// handleDelete() removes the base finalizer after deprovision succeeds.
 		return ctrl.Result{}, nil
 	}
 
@@ -687,7 +685,7 @@ func (r *ComputeInstanceReconciler) syncMetadataPreflight(ctx context.Context, i
 		// are all present in instance after this call. No re-fetch is needed.
 		// A cache-based r.Get() here would race against the async watch stream and
 		// return a stale version that wipes the annotation from instance before it
-		// reaches the AAP/EDA payload in handleProvisioning.
+		// reaches the AAP template payload in handleProvisioning.
 	}
 
 	return subnetTargetNamespace, nil
