@@ -137,7 +137,7 @@ spec:
               networkAttachments:
                 description: |-
                   NetworkAttachments defines multiple NICs when more than one subnet (and optional security groups per NIC) is required.
-                  When non-empty, subnetRef must be empty; the first entry is the primary subnet for VM placement (subnet-namespace annotation).
+                  The first entry is the primary subnet for VM placement (subnet-namespace annotation).
                   Subnet references (per NetworkAttachment) are immutable but security groups can be changed.
 
                   Why immutability is required:
@@ -170,6 +170,7 @@ spec:
                     subnetRef:
                       description: SubnetRef is the name of the Subnet CR in the same
                         namespace as the ComputeInstance.
+                      maxLength: 253
                       minLength: 1
                       type: string
                       x-kubernetes-validations:
@@ -184,8 +185,10 @@ spec:
                 - subnetRef
                 x-kubernetes-list-type: map
                 x-kubernetes-validations:
-                - message: cannot add or remove network attachments
-                  rule: size(self) == size(oldSelf)
+                - message: cannot change or add/remove network attachments after initial
+                    assignment
+                  rule: size(oldSelf) == 0 || (size(self) == size(oldSelf) && self.all(na,
+                    oldSelf.exists(old, old.subnetRef == na.subnetRef)))
               restartRequestedAt:
                 description: |-
                   RestartRequestedAt is a timestamp signal to request a VM restart (MUTABLE).
@@ -214,11 +217,6 @@ spec:
                 x-kubernetes-validations:
                 - message: sshKey is immutable
                   rule: self == oldSelf
-              subnetRef:
-                description: |-
-                  SubnetRef is the name of the Subnet CR in the hub cluster
-                  This references the Kubernetes CR name (not the fulfillment ID)
-                type: string
               templateID:
                 description: TemplateID is the unique identifier of the compute instance
                   template to use when creating this compute instance
@@ -256,10 +254,6 @@ spec:
             - runStrategy
             - templateID
             type: object
-            x-kubernetes-validations:
-            - message: subnetRef must be empty when networkAttachments is set
-              rule: '!(has(self.networkAttachments) && size(self.networkAttachments)
-                > 0 && has(self.subnetRef) && self.subnetRef != "")'
           status:
             description: status defines the observed state of ComputeInstance
             properties:

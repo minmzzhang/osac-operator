@@ -75,41 +75,19 @@ var _ = Describe("ComputeInstance CEL Validation", func() {
 		}
 	}
 
-	Describe("Mutual exclusion: subnetRef and networkAttachments", func() {
-		It("should reject creation when both subnetRef and networkAttachments are set", func() {
-			instance := createValidInstance("test-both-subnets")
-			instance.Spec.SubnetRef = "legacy-subnet"
-			instance.Spec.NetworkAttachments = []osacv1alpha1.NetworkAttachment{
-				{SubnetRef: "new-subnet"},
-			}
+	It("should allow creation with networkAttachments", func() {
+		instance := createValidInstance("test-network-attachments")
+		instance.Spec.NetworkAttachments = []osacv1alpha1.NetworkAttachment{
+			{SubnetRef: "subnet-a"},
+		}
 
-			err := k8sClient.Create(ctx, instance)
-			Expect(err).To(HaveOccurred())
-			Expect(apierrors.IsInvalid(err)).To(BeTrue())
-			Expect(err.Error()).To(ContainSubstring("subnetRef must be empty when networkAttachments is set"))
-		})
+		Expect(k8sClient.Create(ctx, instance)).To(Succeed())
+	})
 
-		It("should allow creation with only subnetRef", func() {
-			instance := createValidInstance("test-legacy-subnet")
-			instance.Spec.SubnetRef = "legacy-subnet"
+	It("should allow creation without networkAttachments", func() {
+		instance := createValidInstance("test-no-subnets")
 
-			Expect(k8sClient.Create(ctx, instance)).To(Succeed())
-		})
-
-		It("should allow creation with only networkAttachments", func() {
-			instance := createValidInstance("test-network-attachments")
-			instance.Spec.NetworkAttachments = []osacv1alpha1.NetworkAttachment{
-				{SubnetRef: "subnet-a"},
-			}
-
-			Expect(k8sClient.Create(ctx, instance)).To(Succeed())
-		})
-
-		It("should allow creation with neither subnetRef nor networkAttachments", func() {
-			instance := createValidInstance("test-no-subnets")
-
-			Expect(k8sClient.Create(ctx, instance)).To(Succeed())
-		})
+		Expect(k8sClient.Create(ctx, instance)).To(Succeed())
 	})
 
 	Describe("NetworkAttachment immutability", func() {

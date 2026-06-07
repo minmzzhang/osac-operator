@@ -46,6 +46,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	kubevirtv1 "kubevirt.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	cluster "sigs.k8s.io/controller-runtime/pkg/cluster"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -60,6 +61,7 @@ import (
 	v1alpha1 "github.com/osac-project/osac-operator/api/v1alpha1"
 	"github.com/osac-project/osac-operator/helpers"
 	"github.com/osac-project/osac-operator/internal/controller"
+	"github.com/osac-project/osac-operator/internal/migrations"
 	"github.com/osac-project/osac-operator/pkg/aap"
 	"github.com/osac-project/osac-operator/pkg/provisioning"
 	// +kubebuilder:scaffold:imports
@@ -683,7 +685,9 @@ func main() {
 		remoteProvider = single.New(remoteClusterName, remoteCluster)
 	}
 
-	mgr, err := mcmanager.New(ctrl.GetConfigOrDie(), remoteProvider, manager.Options{
+	cfg := ctrl.GetConfigOrDie()
+
+	mgr, err := mcmanager.New(cfg, remoteProvider, manager.Options{
 		Scheme:                 localScheme,
 		Metrics:                metricsServerOptions,
 		WebhookServer:          webhookServer,
@@ -752,6 +756,18 @@ func main() {
 	}
 
 	// +kubebuilder:scaffold:builder
+
+	// Register data migrations as a leader-election runnable.
+	// Migrations run once after this instance becomes leader.
+	migrationClient, err := client.New(cfg, client.Options{})
+	if err != nil {
+		setupLog.Error(err, "unable to create client for migrations")
+		os.Exit(1)
+	}
+	if err := mgr.GetLocalManager().Add(migrations.NewRunnable(migrationClient)); err != nil {
+		setupLog.Error(err, "unable to register migrations")
+		os.Exit(1)
+	}
 
 	if err := mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {
 		setupLog.Error(err, "unable to set up health check")

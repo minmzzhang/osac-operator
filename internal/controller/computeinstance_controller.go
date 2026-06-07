@@ -55,7 +55,7 @@ const (
 )
 
 // errSubnetNotFound is returned when the Subnet CR referenced by the primary
-// subnet (spec.subnetRef or networkAttachments[0].subnetRef) does not exist.
+// subnet (networkAttachments[0].subnetRef) does not exist.
 // handleUpdate treats this as a transient error and requeues with a fixed delay
 // instead of exponential backoff.
 var errSubnetNotFound = errors.New("subnet CR not found")
@@ -592,7 +592,7 @@ func (r *ComputeInstanceReconciler) handleDeprovisioning(ctx context.Context, in
 }
 
 // resolveSubnetTargetNamespace looks up the Subnet CR referenced by the primary subnet
-// (spec.subnetRef or networkAttachments[0].subnetRef) and returns the subnet target
+// (networkAttachments[0].subnetRef) and returns the subnet target
 // namespace (which equals the Subnet CR name).
 // Returns empty string if no primary subnet is set.
 // Returns error if Subnet CR lookup fails.
@@ -629,7 +629,7 @@ func (r *ComputeInstanceReconciler) resolveSubnetTargetNamespace(ctx context.Con
 }
 
 // syncSubnetTargetNamespaceAnnotation ensures the subnet-target-namespace annotation is set
-// when a primary subnet (subnetRef or networkAttachments[0].subnetRef) is configured.
+// when a primary subnet (networkAttachments[0].subnetRef) is configured.
 // The primary subnet reference is immutable, so the annotation only needs to be resolved
 // and written once; subsequent reconciles reuse the cached annotation value.
 // Returns the resolved namespace, whether the annotation was written, and any error.
@@ -658,7 +658,7 @@ func (r *ComputeInstanceReconciler) syncSubnetTargetNamespaceAnnotation(ctx cont
 }
 
 // syncMetadataPreflight ensures the finalizer is set and the subnet-target-namespace
-// annotation is in sync with the current SubnetRef.  It batches all metadata
+// annotation is in sync with the current networkAttachments subnet.  It batches all metadata
 // changes into a single r.Update() call to avoid multiple round-trips and the
 // status-clobbering problem.  The resolved subnetTargetNamespace is returned so
 // callers can reuse it without a second resolveSubnetNamespace call.
@@ -739,7 +739,7 @@ func (r *ComputeInstanceReconciler) handleUpdate(ctx context.Context, _ reconcil
 		return ctrl.Result{}, err
 	}
 
-	// When a subnetRef is set, the VM is created in the subnet target namespace
+	// When a networkAttachment is set, the VM is created in the subnet target namespace
 	// (by the AAP playbook), not in the tenant target namespace.  Reuse the
 	// value resolved by syncMetadataPreflight to avoid a redundant API call.
 	targetNamespace := tenant.Status.Namespace

@@ -166,15 +166,7 @@ var _ = Describe("ComputeInstance", func() {
 			Expect(spec.PrimarySubnetRef()).To(Equal("subnet-A"))
 		})
 
-		It("should return legacy subnetRef when networkAttachments is empty", func() {
-			spec := v1alpha1.ComputeInstanceSpec{
-				SubnetRef: "legacy-subnet",
-			}
-
-			Expect(spec.PrimarySubnetRef()).To(Equal("legacy-subnet"))
-		})
-
-		It("should return empty string when both are unset", func() {
+		It("should return empty string when networkAttachments is empty", func() {
 			spec := v1alpha1.ComputeInstanceSpec{}
 
 			Expect(spec.PrimarySubnetRef()).To(Equal(""))

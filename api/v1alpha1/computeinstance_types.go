@@ -71,6 +71,7 @@ type NetworkAttachment struct {
 	// SubnetRef is the name of the Subnet CR in the same namespace as the ComputeInstance.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="subnetRef is immutable"
 	SubnetRef string `json:"subnetRef"`
 
@@ -81,8 +82,6 @@ type NetworkAttachment struct {
 }
 
 // ComputeInstanceSpec defines the desired state of ComputeInstance
-//
-// +kubebuilder:validation:XValidation:rule="!(has(self.networkAttachments) && size(self.networkAttachments) > 0 && has(self.subnetRef) && self.subnetRef != \"\")",message="subnetRef must be empty when networkAttachments is set"
 type ComputeInstanceSpec struct {
 	// TemplateID is the unique identifier of the compute instance template to use when creating this compute instance
 	// +kubebuilder:validation:Required
@@ -138,13 +137,8 @@ type ComputeInstanceSpec struct {
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="sshKey is immutable"
 	SSHKey string `json:"sshKey,omitempty"`
 
-	// SubnetRef is the name of the Subnet CR in the hub cluster
-	// This references the Kubernetes CR name (not the fulfillment ID)
-	// +kubebuilder:validation:Optional
-	SubnetRef string `json:"subnetRef,omitempty"`
-
 	// NetworkAttachments defines multiple NICs when more than one subnet (and optional security groups per NIC) is required.
-	// When non-empty, subnetRef must be empty; the first entry is the primary subnet for VM placement (subnet-namespace annotation).
+	// The first entry is the primary subnet for VM placement (subnet-namespace annotation).
 	// Subnet references (per NetworkAttachment) are immutable but security groups can be changed.
 	//
 	// Why immutability is required:
@@ -165,7 +159,7 @@ type ComputeInstanceSpec struct {
 	// over array items to validate this rule, causing CRD installation to fail with "estimated rule cost exceeds budget".
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxItems=8
-	// +kubebuilder:validation:XValidation:rule="size(self) == size(oldSelf)",message="cannot add or remove network attachments"
+	// +kubebuilder:validation:XValidation:rule="size(oldSelf) == 0 || (size(self) == size(oldSelf) && self.all(na, oldSelf.exists(old, old.subnetRef == na.subnetRef)))",message="cannot change or add/remove network attachments after initial assignment"
 	// +listType=map
 	// +listMapKey=subnetRef
 	NetworkAttachments []NetworkAttachment `json:"networkAttachments,omitempty"`
@@ -353,10 +347,10 @@ func (ci *ComputeInstance) GetName() string {
 }
 
 // PrimarySubnetRef returns the Subnet CR name used for VM placement and the subnet-namespace annotation:
-// the first networkAttachments[].subnetRef when that list is non-empty, otherwise spec.subnetRef (legacy single-NIC).
+// the first networkAttachments[].subnetRef when that list is non-empty, otherwise empty string.
 func (s ComputeInstanceSpec) PrimarySubnetRef() string {
 	if len(s.NetworkAttachments) > 0 {
 		return s.NetworkAttachments[0].SubnetRef
 	}
-	return s.SubnetRef
+	return ""
 }
