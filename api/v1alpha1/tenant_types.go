@@ -41,11 +41,17 @@ type TenantConditionType string
 
 const (
 	// TenantConditionNamespaceReady indicates whether the tenant namespace
-	// exists on the target cluster.
+	// exists on the target cluster. Owned by the Tenant controller.
 	TenantConditionNamespaceReady TenantConditionType = "NamespaceReady"
 
-	// TenantConditionStorageClassReady indicates whether a valid StorageClass
-	// has been found for the tenant (tenant-specific or shared Default).
+	// TenantConditionStorageBackendReady indicates whether the tenant's storage
+	// backend is provisioned (hub Secret exists with credentials).
+	// Owned by the OSAC Storage Controller.
+	TenantConditionStorageBackendReady TenantConditionType = "StorageBackendReady"
+
+	// TenantConditionStorageClassReady indicates whether StorageClasses have been
+	// resolved for the tenant on the target cluster.
+	// Owned by the OSAC Storage Controller.
 	TenantConditionStorageClassReady TenantConditionType = "StorageClassReady"
 )
 
@@ -57,7 +63,7 @@ const (
 )
 
 // ResolvedStorageClass captures a single resolved StorageClass for a specific
-// storage tier. The Tenant controller populates one entry per tier.
+// storage tier. The OSAC Storage Controller populates one entry per tier.
 type ResolvedStorageClass struct {
 	// Name is the name of the resolved Kubernetes StorageClass.
 	// +kubebuilder:validation:Required
@@ -102,6 +108,8 @@ type TenantStatus struct {
 // +kubebuilder:printcolumn:name="Storage Classes",type=string,JSONPath=`.status.storageClasses[*].name`
 // +kubebuilder:printcolumn:name="Storage Tiers",type=string,JSONPath=`.status.storageClasses[*].tier`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="StorageBackendReady",type=string,JSONPath=`.status.conditions[?(@.type=="StorageBackendReady")].status`,priority=1
+// +kubebuilder:printcolumn:name="StorageClassReady",type=string,JSONPath=`.status.conditions[?(@.type=="StorageClassReady")].status`,priority=1
 
 // Tenant is the Schema for the tenants API.
 type Tenant struct {
@@ -116,6 +124,7 @@ type Tenant struct {
 func (t *Tenant) GetStatusJobs() []JobStatus {
 	return t.Status.Jobs
 }
+
 
 // +kubebuilder:object:root=true
 
