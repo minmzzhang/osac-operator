@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -624,6 +625,9 @@ func (r *StorageReconciler) hubSecretExists(ctx context.Context, tenantName stri
 }
 
 func storageConfigNamespace() string {
+	if ns := os.Getenv("OSAC_STORAGE_CONFIG_NAMESPACE"); ns != "" {
+		return ns
+	}
 	return "osac-system"
 }
 
