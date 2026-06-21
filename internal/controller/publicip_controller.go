@@ -216,10 +216,7 @@ func (r *PublicIPReconciler) handleUpdate(ctx context.Context, publicIP *v1alpha
 		if err := r.Update(ctx, publicIP); err != nil {
 			return ctrl.Result{}, err
 		}
-		// Re-fetch to get the latest resourceVersion after the metadata update
-		if err := r.Get(ctx, client.ObjectKeyFromObject(publicIP), publicIP); err != nil {
-			return ctrl.Result{}, err
-		}
+		return ctrl.Result{}, nil
 	}
 
 	// Compute desired config version from spec and inherited implementation strategy.

@@ -918,6 +918,7 @@ var _ = Describe("PublicIPReconciler", func() {
 			// resourceVersion (handleUpdate modifies the object in the store).
 			allocatedIP := &osacv1alpha1.PublicIP{}
 			Expect(fakeClient.Get(testCtx, key, allocatedIP)).To(Succeed())
+			allocatedIP.Status.Phase = osacv1alpha1.PublicIPPhaseProgressing
 			allocatedIP.Status.State = osacv1alpha1.PublicIPStateAllocated
 			allocatedIP.Status.Address = ""
 
