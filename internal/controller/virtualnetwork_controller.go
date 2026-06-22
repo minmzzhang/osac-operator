@@ -203,7 +203,7 @@ func (r *VirtualNetworkReconciler) handleProvisioning(ctx context.Context, vnet 
 			OnSuccess: func(_ provisioning.ProvisionStatus) { vnet.Status.Phase = v1alpha1.VirtualNetworkPhaseReady },
 		},
 		func() bool {
-			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(vnet), &v1alpha1.VirtualNetwork{})
+			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(vnet), &v1alpha1.VirtualNetwork{}, func(obj client.Object) []v1alpha1.JobStatus { return obj.(*v1alpha1.VirtualNetwork).Status.ProvisioningJobs })
 		},
 		func() error {
 			return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(vnet), vnet.Status)

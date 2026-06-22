@@ -435,7 +435,7 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			vnet.Finalizers = []string{osacVirtualNetworkFinalizer}
 			vnet.DeletionTimestamp = &metav1.Time{Time: time.Now()}
 
-			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action:                 provisioning.DeprovisionTriggered,
 					JobID:                  "deprovision-job-303",
@@ -550,7 +550,7 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 			key := types.NamespacedName{Name: managedThenUnmanaged.Name, Namespace: managedThenUnmanaged.Namespace}
 
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action: provisioning.DeprovisionSkipped,
@@ -602,7 +602,7 @@ var _ = Describe("VirtualNetworkReconciler", func() {
 type mockVirtualNetworkProvider struct {
 	triggerProvisionFunc     func(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error)
 	getProvisionStatusFunc   func(ctx context.Context, resource client.Object, jobID string) (provisioning.ProvisionStatus, error)
-	triggerDeprovisionFunc   func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error)
+	triggerDeprovisionFunc   func(ctx context.Context, resource client.Object, provisionJobs []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error)
 	getDeprovisionStatusFunc func(ctx context.Context, resource client.Object, jobID string) (provisioning.ProvisionStatus, error)
 }
 
@@ -628,9 +628,9 @@ func (m *mockVirtualNetworkProvider) GetProvisionStatus(ctx context.Context, res
 	}, nil
 }
 
-func (m *mockVirtualNetworkProvider) TriggerDeprovision(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+func (m *mockVirtualNetworkProvider) TriggerDeprovision(ctx context.Context, resource client.Object, provisionJobs []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 	if m.triggerDeprovisionFunc != nil {
-		return m.triggerDeprovisionFunc(ctx, resource)
+		return m.triggerDeprovisionFunc(ctx, resource, provisionJobs)
 	}
 	return &provisioning.DeprovisionResult{
 		Action:                 provisioning.DeprovisionTriggered,

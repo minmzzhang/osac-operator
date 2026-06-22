@@ -275,7 +275,7 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 			OnSuccess: func(_ provisioning.ProvisionStatus) { subnet.Status.Phase = v1alpha1.SubnetPhaseReady },
 		},
 		func() bool {
-			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(subnet), &v1alpha1.Subnet{})
+			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(subnet), &v1alpha1.Subnet{}, func(obj client.Object) []v1alpha1.JobStatus { return obj.(*v1alpha1.Subnet).Status.ProvisioningJobs })
 		},
 		func() error {
 			return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(subnet), subnet.Status)

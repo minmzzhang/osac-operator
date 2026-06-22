@@ -35,6 +35,6 @@ const (
 	// DefaultStatusPollInterval is the default interval for polling provider status.
 	DefaultStatusPollInterval = 30 * time.Second
 
-	// DefaultMaxJobHistory is the default number of jobs to keep in status.jobs array.
+	// DefaultMaxJobHistory is the default number of jobs to keep per job array.
 	DefaultMaxJobHistory = 10
 )

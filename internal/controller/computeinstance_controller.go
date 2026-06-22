@@ -72,7 +72,7 @@ type ComputeInstanceReconciler struct {
 	ProvisioningProvider     provisioning.ProvisioningProvider
 	// StatusPollInterval defines how often to check provisioning job status
 	StatusPollInterval time.Duration
-	// MaxJobHistory defines how many jobs to keep in status.jobs array
+	// MaxJobHistory defines how many jobs to keep per job array
 	MaxJobHistory int
 	targetCluster mc.ClusterName
 }
@@ -444,14 +444,14 @@ func (r *ComputeInstanceReconciler) handleProvisioning(ctx context.Context, inst
 			OnFailed: func(_ string) {
 				// Only set Failed phase if no VM exists yet (first-time provisioning failure).
 				// If the VM already exists (re-provisioning failure), the phase is driven by KubeVirt
-				// PrintableStatus and the failed job is visible in status.jobs.
+				// PrintableStatus and the failed job is visible in status.provisioningJobs.
 				if instance.Status.VirtualMachineReference == nil {
 					instance.Status.Phase = v1alpha1.ComputeInstancePhaseFailed
 				}
 			},
 		},
 		func() bool {
-			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.mgr.GetLocalManager().GetAPIReader(), client.ObjectKeyFromObject(instance), &v1alpha1.ComputeInstance{})
+			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.mgr.GetLocalManager().GetAPIReader(), client.ObjectKeyFromObject(instance), &v1alpha1.ComputeInstance{}, func(obj client.Object) []v1alpha1.JobStatus { return obj.(*v1alpha1.ComputeInstance).Status.ProvisioningJobs })
 		},
 		func() error {
 			return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(instance), instance.Status)
@@ -462,133 +462,18 @@ func (r *ComputeInstanceReconciler) handleProvisioning(ctx context.Context, inst
 // handleDeprovisioning manages the deprovisioning job lifecycle for a ComputeInstance.
 // Note: Finalizer management is handled by handleDelete(), not here.
 func (r *ComputeInstanceReconciler) handleDeprovisioning(ctx context.Context, instance *v1alpha1.ComputeInstance) (ctrl.Result, error) {
-	log := ctrllog.FromContext(ctx)
-
-	// Check for ManagementStateManual annotation
 	val, exists := instance.Annotations[osacComputeInstanceManagementStateAnnotation]
 	if exists && val == ManagementStateManual {
-		log.Info("skipping deprovisioning due to management-state annotation", "management-state", val)
-		// handleDelete() removes the base finalizer when deprovision is skipped.
+		ctrllog.FromContext(ctx).Info("skipping deprovisioning due to management-state annotation", "management-state", val)
 		return ctrl.Result{}, nil
 	}
 
-	// Check if we already have a deprovision job
-	latestDeprovisionJob := provisioning.FindLatestJobByType(instance.Status.ProvisioningJobs, v1alpha1.JobTypeDeprovision)
-
-	// Trigger deprovisioning - provider decides internally if ready
-	if !provisioning.HasJobID(latestDeprovisionJob) {
-		log.Info("triggering deprovisioning", "provider", r.ProvisioningProvider.Name())
-
-		result, err := r.ProvisioningProvider.TriggerDeprovision(ctx, instance)
-		if err != nil {
-			// Check if this is a rate limit error
-			var rateLimitErr *provisioning.RateLimitError
-			if errors.As(err, &rateLimitErr) {
-				log.Info("deprovisioning request rate-limited, will retry", "retryAfter", rateLimitErr.RetryAfter)
-				return ctrl.Result{RequeueAfter: rateLimitErr.RetryAfter}, nil
-			}
-
-			// Actual error
-			log.Error(err, "failed to trigger deprovisioning")
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		}
-
-		// Handle provider action
-		switch result.Action {
-		case provisioning.DeprovisionWaiting:
-			// Provider not ready yet (e.g., canceling provision job)
-			// Update provision job status if provider returned one (e.g., cancellation in progress)
-			if result.ProvisionJobStatus != nil {
-				latestProvisionJob := provisioning.FindLatestJobByType(instance.Status.ProvisioningJobs, v1alpha1.JobTypeProvision)
-				if latestProvisionJob != nil {
-					updatedJob := *latestProvisionJob
-					updatedJob.State = result.ProvisionJobStatus.State
-					updatedJob.Message = result.ProvisionJobStatus.Message
-					provisioning.UpdateJob(instance.Status.ProvisioningJobs, updatedJob)
-					log.Info("updated provision job status while waiting for deprovision", "state", result.ProvisionJobStatus.State, "message", result.ProvisionJobStatus.Message)
-				}
-			}
-			log.Info("deprovisioning not ready, requeueing")
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-
-		case provisioning.DeprovisionSkipped:
-			// Provider determined deprovisioning not needed.
-			log.Info("provider skipped deprovisioning")
-			return ctrl.Result{}, nil
-
-		case provisioning.DeprovisionTriggered:
-			// Deprovision started successfully
-			// Update provision job status if provider returned one (job was terminal before deprovision)
-			if result.ProvisionJobStatus != nil {
-				latestProvisionJob := provisioning.FindLatestJobByType(instance.Status.ProvisioningJobs, v1alpha1.JobTypeProvision)
-				if latestProvisionJob != nil {
-					updatedJob := *latestProvisionJob
-					updatedJob.State = result.ProvisionJobStatus.State
-					updatedJob.Message = result.ProvisionJobStatus.Message
-					provisioning.UpdateJob(instance.Status.ProvisioningJobs, updatedJob)
-					log.Info("updated provision job status before starting deprovision", "state", result.ProvisionJobStatus.State, "message", result.ProvisionJobStatus.Message)
-				}
-			}
-			newJob := v1alpha1.JobStatus{
-				JobID:                  result.JobID,
-				Type:                   v1alpha1.JobTypeDeprovision,
-				Timestamp:              metav1.NewTime(time.Now().UTC()),
-				State:                  v1alpha1.JobStatePending,
-				Message:                deprovisioningJobTriggeredMessage,
-				BlockDeletionOnFailure: result.BlockDeletionOnFailure,
-			}
-			instance.Status.ProvisioningJobs = provisioning.AppendJob(instance.Status.ProvisioningJobs, newJob, r.MaxJobHistory)
-			log.Info("deprovisioning job triggered", "jobID", result.JobID)
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		}
+	result, done, err := provisioning.RunDeprovisioningLifecycle(ctx, r.ProvisioningProvider, instance,
+		&instance.Status.ProvisioningJobs, r.MaxJobHistory, r.StatusPollInterval)
+	if err != nil || !done {
+		return result, err
 	}
-
-	// We have a job ID, check its status
-	status, err := r.ProvisioningProvider.GetDeprovisionStatus(ctx, instance, latestDeprovisionJob.JobID)
-	if err != nil {
-		log.Error(err, "failed to get deprovision job status", "jobID", latestDeprovisionJob.JobID)
-		updatedJob := *latestDeprovisionJob
-		updatedJob.Message = fmt.Sprintf("Failed to get job status: %v", err)
-		provisioning.UpdateJob(instance.Status.ProvisioningJobs, updatedJob)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	}
-
-	// Update job status
-	updatedJob := *latestDeprovisionJob
-	updatedJob.State = status.State
-	updatedJob.Message = status.MessageWithDetails()
-	provisioning.UpdateJob(instance.Status.ProvisioningJobs, updatedJob)
-
-	// If job is still running, requeue
-	if !status.State.IsTerminal() {
-		log.Info("deprovision job still running", "jobID", latestDeprovisionJob.JobID, "state", status.State)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	}
-
-	// Job reached terminal state (Succeeded, Failed, or Canceled)
-	if status.State.IsSuccessful() {
-		log.Info("deprovision job succeeded", "jobID", latestDeprovisionJob.JobID)
-		// handleDelete() removes the base finalizer after deprovision succeeds.
-		return ctrl.Result{}, nil
-	}
-
-	// Job failed or was canceled
-	// Check policy stored in job status
-	if latestDeprovisionJob.BlockDeletionOnFailure {
-		// Block deletion to prevent orphaned resources
-		log.Info("deprovision job failed, blocking deletion to prevent orphaned resources",
-			"jobID", latestDeprovisionJob.JobID,
-			"state", status.State,
-			"message", updatedJob.Message)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	} else {
-		// Allow process to continue (webhook handles cleanup)
-		log.Info("deprovision job did not succeed, allowing process to continue",
-			"jobID", latestDeprovisionJob.JobID,
-			"state", status.State,
-			"message", updatedJob.Message)
-		return ctrl.Result{}, nil
-	}
+	return ctrl.Result{}, nil
 }
 
 // resolveSubnetTargetNamespace looks up the Subnet CR referenced by the primary subnet

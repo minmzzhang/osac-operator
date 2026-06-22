@@ -277,7 +277,7 @@ var _ = Describe("PublicIPPoolReconciler", func() {
 
 			deprovisionCalled := false
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				deprovisionCalled = true
 				return &provisioning.DeprovisionResult{
@@ -311,7 +311,7 @@ var _ = Describe("PublicIPPoolReconciler", func() {
 			key := types.NamespacedName{Name: pool.Name, Namespace: pool.Namespace}
 
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action:                 provisioning.DeprovisionTriggered,
@@ -378,7 +378,7 @@ var _ = Describe("PublicIPPoolReconciler", func() {
 
 			deprovisionCalled := false
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				deprovisionCalled = true
 				return &provisioning.DeprovisionResult{

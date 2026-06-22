@@ -41,31 +41,10 @@ type State struct {
 	DesiredConfigVersion string
 }
 
-// GetJobsFromResource extracts the standard provisioning jobs array from a resource.
-// Returns nil for resource types that don't use standard provisioning (e.g. Tenant,
-// whose storage jobs are tracked in lifecycle-specific arrays managed by the storage controller).
-func GetJobsFromResource(resource client.Object) []v1alpha1.JobStatus {
-	switch r := resource.(type) {
-	case *v1alpha1.ComputeInstance:
-		return r.Status.ProvisioningJobs
-	case *v1alpha1.ClusterOrder:
-		return r.Status.ProvisioningJobs
-	case *v1alpha1.VirtualNetwork:
-		return r.Status.ProvisioningJobs
-	case *v1alpha1.Subnet:
-		return r.Status.ProvisioningJobs
-	case *v1alpha1.SecurityGroup:
-		return r.Status.ProvisioningJobs
-	case *v1alpha1.PublicIPPool:
-		return r.Status.ProvisioningJobs
-	case *v1alpha1.PublicIP:
-		return r.Status.ProvisioningJobs
-	case *v1alpha1.PublicIPAttachment:
-		return r.Status.ProvisioningJobs
-	default:
-		return nil
-	}
-}
+// JobsExtractor extracts a jobs array from a resource. Used by CheckAPIServerForNonTerminalProvisionJob
+// to read jobs from a fresh API server copy of the resource. Each controller passes a typed extractor
+// for its own CRD (e.g. func(obj) { return obj.(*Subnet).Status.ProvisioningJobs }).
+type JobsExtractor func(client.Object) []v1alpha1.JobStatus
 
 // EvaluateAction determines the next provisioning action based on job history and config versions.
 func EvaluateAction(provState *State, checkAPIServer func() bool) (Action, *v1alpha1.JobStatus) {
@@ -95,13 +74,14 @@ func EvaluateAction(provState *State, checkAPIServer func() bool) (Action, *v1al
 }
 
 // CheckAPIServerForNonTerminalProvisionJob reads the resource directly from the API server
-// and returns true if a non-terminal provision job exists.
-func CheckAPIServerForNonTerminalProvisionJob(ctx context.Context, apiReader client.Reader, key client.ObjectKey, fresh client.Object) bool {
+// and returns true if a non-terminal provision job exists. The extract parameter (a JobsExtractor)
+// determines which jobs array to check — each controller passes a typed extractor for its CRD.
+func CheckAPIServerForNonTerminalProvisionJob(ctx context.Context, apiReader client.Reader, key client.ObjectKey, fresh client.Object, extract JobsExtractor) bool {
 	log := ctrllog.FromContext(ctx)
 	if err := apiReader.Get(ctx, key, fresh); err != nil {
 		return false
 	}
-	freshJobs := GetJobsFromResource(fresh)
+	freshJobs := extract(fresh)
 	freshJob := FindLatestJobByType(freshJobs, v1alpha1.JobTypeProvision)
 	if HasJobID(freshJob) && !freshJob.State.IsTerminal() {
 		log.Info("skipping provision trigger: non-terminal job found via API server", "jobID", freshJob.JobID, "state", freshJob.State)
@@ -277,7 +257,7 @@ func TriggerDeprovisionJob(ctx context.Context, provider ProvisioningProvider, r
 	log := ctrllog.FromContext(ctx)
 	log.Info("triggering deprovision job")
 
-	result, err := provider.TriggerDeprovision(ctx, resource)
+	result, err := provider.TriggerDeprovision(ctx, resource, *jobs)
 	if err != nil {
 		if rateLimitErr, ok := AsRateLimitError(err); ok {
 			log.Info("deprovision request rate-limited, requeueing", "retryAfter", rateLimitErr.RetryAfter)

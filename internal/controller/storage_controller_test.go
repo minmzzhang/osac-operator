@@ -221,7 +221,7 @@ var _ = Describe("Storage Controller", func() {
 			Expect(cond.Reason).To(Equal(v1alpha1.TenantReasonNoProvider))
 		})
 
-		It("should record failed provisioning job", func() {
+		It("should propagate trigger error without creating fake job", func() {
 			name := "storage-test-prov-fail"
 			createReadyTenantForStorage(ctx, name, testNamespace)
 
@@ -238,13 +238,12 @@ var _ = Describe("Storage Controller", func() {
 
 			nn := types.NamespacedName{Name: name, Namespace: testNamespace}
 			_, err := r.Reconcile(ctx, storageReconcileRequest(nn))
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("AAP unreachable"))
 
 			tenant := &v1alpha1.Tenant{}
 			Expect(k8sClient.Get(ctx, nn, tenant)).To(Succeed())
-			Expect(tenant.Status.StorageBackendJobs).To(HaveLen(1))
-			Expect(tenant.Status.StorageBackendJobs[0].State).To(Equal(v1alpha1.JobStateFailed))
-			Expect(tenant.Status.StorageBackendJobs[0].Message).To(ContainSubstring("AAP unreachable"))
+			Expect(tenant.Status.StorageBackendJobs).To(BeEmpty())
 		})
 	})
 
@@ -522,13 +521,12 @@ var _ = Describe("Storage Controller", func() {
 
 			nn := types.NamespacedName{Name: name, Namespace: testNamespace}
 			_, err := r.Reconcile(ctx, storageReconcileRequest(nn))
-			Expect(err).NotTo(HaveOccurred())
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("cluster storage template not found"))
 
 			tenant := &v1alpha1.Tenant{}
 			Expect(k8sClient.Get(ctx, nn, tenant)).To(Succeed())
-			Expect(tenant.Status.ClusterStorageJobs).To(HaveLen(1))
-			Expect(tenant.Status.ClusterStorageJobs[0].State).To(Equal(v1alpha1.JobStateFailed))
-			Expect(tenant.Status.ClusterStorageJobs[0].Message).To(ContainSubstring("cluster storage template not found"))
+			Expect(tenant.Status.ClusterStorageJobs).To(BeEmpty())
 		})
 	})
 
@@ -578,6 +576,96 @@ var _ = Describe("Storage Controller", func() {
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
+		})
+	})
+
+	Context("Deprovisioning ordering", func() {
+		It("should clean up cluster storage before backend teardown", func() {
+			name := "storage-test-deprov-order"
+			createReadyTenantForStorage(ctx, name, testNamespace)
+			createHubSecret(ctx, name, secretsNamespace)
+
+			var deprovisionOrder []string
+			clusterProvider := &mockProvisioningProvider{
+				name: "cluster-mock",
+				triggerDeprovisionFunc: func(_ context.Context, _ client.Object, _ []v1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
+					deprovisionOrder = append(deprovisionOrder, "cluster-storage")
+					return &provisioning.DeprovisionResult{
+						Action: provisioning.DeprovisionTriggered,
+						JobID:  "deprov-cs-1",
+					}, nil
+				},
+				getDeprovisionStatusFunc: func(_ context.Context, _ client.Object, _ string) (provisioning.ProvisionStatus, error) {
+					return provisioning.ProvisionStatus{State: v1alpha1.JobStateSucceeded, Message: "done"}, nil
+				},
+			}
+			backendProvider := &mockProvisioningProvider{
+				name: "backend-mock",
+				triggerDeprovisionFunc: func(_ context.Context, _ client.Object, _ []v1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
+					deprovisionOrder = append(deprovisionOrder, "backend")
+					return &provisioning.DeprovisionResult{
+						Action: provisioning.DeprovisionTriggered,
+						JobID:  "deprov-be-1",
+					}, nil
+				},
+				getDeprovisionStatusFunc: func(_ context.Context, _ client.Object, _ string) (provisioning.ProvisionStatus, error) {
+					return provisioning.ProvisionStatus{State: v1alpha1.JobStateSucceeded, Message: "done"}, nil
+				},
+			}
+
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				backendProvider, clusterProvider, pollInterval,
+				provisioning.DefaultMaxJobHistory,
+			)
+
+			nn := types.NamespacedName{Name: name, Namespace: testNamespace}
+			_, err := r.Reconcile(ctx, storageReconcileRequest(nn))
+			Expect(err).NotTo(HaveOccurred())
+
+			tenant := &v1alpha1.Tenant{}
+			Expect(k8sClient.Get(ctx, nn, tenant)).To(Succeed())
+			Expect(tenant.Finalizers).To(ContainElement(storageFinalizer))
+
+			Expect(k8sClient.Delete(ctx, tenant)).To(Succeed())
+
+			Eventually(func(g Gomega) {
+				_, err := r.Reconcile(ctx, storageReconcileRequest(nn))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(deprovisionOrder).To(HaveLen(2))
+			}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
+
+			Expect(deprovisionOrder[0]).To(Equal("cluster-storage"))
+			Expect(deprovisionOrder[1]).To(Equal("backend"))
+		})
+	})
+
+	Context("Duplicate StorageClass detection", func() {
+		It("should set ClusterStorageReady=False with MultipleFound when duplicate SCs exist for same tier", func() {
+			name := "storage-test-dup-sc"
+			createReadyTenantForStorage(ctx, name, testNamespace)
+			createHubSecret(ctx, name, secretsNamespace)
+			createLabeledStorageClass(ctx, name+"-sc-1", name, "default")
+			createLabeledStorageClass(ctx, name+"-sc-2", name, "default")
+
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, nil, pollInterval,
+				provisioning.DefaultMaxJobHistory,
+			)
+
+			nn := types.NamespacedName{Name: name, Namespace: testNamespace}
+			_, err := r.Reconcile(ctx, storageReconcileRequest(nn))
+			Expect(err).NotTo(HaveOccurred())
+
+			tenant := &v1alpha1.Tenant{}
+			Expect(k8sClient.Get(ctx, nn, tenant)).To(Succeed())
+
+			cond := tenant.GetStatusCondition(v1alpha1.TenantConditionClusterStorageReady)
+			Expect(cond).NotTo(BeNil())
+			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(cond.Reason).To(Equal(v1alpha1.TenantReasonMultipleFound))
+			Expect(tenant.Status.StorageClasses).To(BeEmpty())
 		})
 	})
 })

@@ -86,7 +86,7 @@ func (p *controllableProvider) GetProvisionStatus(ctx context.Context, resource 
 	}, nil
 }
 
-func (p *controllableProvider) TriggerDeprovision(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+func (p *controllableProvider) TriggerDeprovision(ctx context.Context, resource client.Object, provisionJobs []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -94,9 +94,7 @@ func (p *controllableProvider) TriggerDeprovision(ctx context.Context, resource 
 		return nil, p.deprovisionTriggerErr
 	}
 
-	// Check if provision job needs to be terminated first (AAP behavior)
-	jobs := provisioning.GetJobsFromResource(resource)
-	latestProvisionJob := provisioning.FindLatestJobByType(jobs, osacv1alpha1.JobTypeProvision)
+	latestProvisionJob := provisioning.FindLatestJobByType(provisionJobs, osacv1alpha1.JobTypeProvision)
 	if latestProvisionJob != nil {
 		if !p.provisionJobState.IsTerminal() {
 			// Cancel the provision job

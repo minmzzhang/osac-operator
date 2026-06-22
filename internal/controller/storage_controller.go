@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -52,7 +51,7 @@ const (
 
 // StorageReconciler reconciles storage lifecycle on Tenant CRs.
 // It owns StorageBackendReady, ClusterStorageReady conditions,
-// status.storageClasses, and status.jobs on the Tenant CR.
+// status.storageClasses, status.storageBackendJobs, and status.clusterStorageJobs on the Tenant CR.
 type StorageReconciler struct {
 	client.Client
 	Scheme                 *runtime.Scheme
@@ -188,6 +187,7 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 		metav1.ConditionTrue,
 		v1alpha1.TenantReasonFound,
 		fmt.Sprintf("Hub Secret for tenant %q exists", tenantName))
+	// TODO(OSAC-1111): populate StorageBackendStatus once StorageBackend API provides name/provider
 
 	// Stage 2: resolve StorageClasses on target cluster
 	targetClient, err := getTargetClient(ctx, r.mgr, r.targetCluster)
@@ -204,6 +204,8 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 		r.Recorder.Eventf(instance, nil, corev1.EventTypeWarning, eventReasonDuplicateStorageClass, eventActionDetectDuplicate, "%s", msg)
 	}
 
+	clusterName := string(r.targetCluster)
+
 	if len(result.resolved) == 0 {
 		reason := v1alpha1.TenantReasonNotFound
 		if len(result.duplicateMessages) > 0 {
@@ -215,6 +217,9 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 			reason,
 			condMsg)
 		instance.Status.StorageClasses = nil
+		instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
+			{ClusterName: clusterName, Ready: false, Reason: reason},
+		}
 
 		if r.ClusterStorageProvider != nil && reason == v1alpha1.TenantReasonNotFound {
 			return r.handleClusterStorageProvisioning(ctx, instance)
@@ -227,11 +232,16 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 		v1alpha1.TenantReasonFound,
 		result.conditionMessage())
 	instance.Status.StorageClasses = result.resolved
+	instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
+		{ClusterName: clusterName, Ready: true, Reason: v1alpha1.TenantReasonFound},
+	}
 
-	// Poll any non-terminal class provision job before declaring complete
+	// Poll any non-terminal class provision job to update its status
 	latestClassJob := provisioning.FindLatestJobByType(instance.Status.ClusterStorageJobs, v1alpha1.JobTypeProvision)
 	if latestClassJob != nil && !latestClassJob.State.IsTerminal() && r.ClusterStorageProvider != nil {
-		return r.pollClusterStorageProvisionJob(ctx, instance, latestClassJob)
+		return provisioning.PollJob(ctx, r.ClusterStorageProvider, instance,
+			&provisioning.State{Jobs: &instance.Status.ClusterStorageJobs},
+			latestClassJob, r.StatusPollInterval, nil)
 	}
 
 	return ctrl.Result{}, nil
@@ -281,219 +291,65 @@ func (r *StorageReconciler) handleDelete(ctx context.Context, instance *v1alpha1
 // --- Stage 1: Backend provisioning ---
 
 func (r *StorageReconciler) handleBackendProvisioning(ctx context.Context, instance *v1alpha1.Tenant) (ctrl.Result, error) {
-	log := ctrllog.FromContext(ctx)
-
 	latestJob := provisioning.FindLatestJobByType(instance.Status.StorageBackendJobs, v1alpha1.JobTypeProvision)
-
 	if latestJob != nil && latestJob.State == v1alpha1.JobStateFailed {
-		log.Info("latest backend provision job failed, waiting for external trigger to retry",
+		ctrllog.FromContext(ctx).Info("latest backend provision job failed, waiting for external trigger to retry",
 			"message", latestJob.Message)
 		return ctrl.Result{}, nil
 	}
 
-	if provisioning.NeedsProvisionJob(latestJob) {
-		log.Info("triggering backend provisioning", "provider", r.BackendProvider.Name())
-		result, err := r.BackendProvider.TriggerProvision(ctx, instance)
-		if err != nil {
-			var rateLimitErr *provisioning.RateLimitError
-			if errors.As(err, &rateLimitErr) {
-				log.Info("backend provisioning rate-limited, will retry", "retryAfter", rateLimitErr.RetryAfter)
-				return ctrl.Result{RequeueAfter: rateLimitErr.RetryAfter}, nil
-			}
-
-			log.Error(err, "failed to trigger backend provisioning")
-			newJob := v1alpha1.JobStatus{
-				JobID:     "",
-				Type:      v1alpha1.JobTypeProvision,
-				Timestamp: metav1.NewTime(time.Now().UTC()),
-				State:     v1alpha1.JobStateFailed,
-				Message:   fmt.Sprintf("Failed to trigger backend provisioning: %v", err),
-			}
-			instance.Status.StorageBackendJobs = provisioning.AppendJob(instance.Status.StorageBackendJobs, newJob, r.MaxJobHistory)
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		}
-
-		newJob := v1alpha1.JobStatus{
-			JobID:     result.JobID,
-			Type:      v1alpha1.JobTypeProvision,
-			Timestamp: metav1.NewTime(time.Now().UTC()),
-			State:     result.InitialState,
-			Message:   result.Message,
-		}
-		instance.Status.StorageBackendJobs = provisioning.AppendJob(instance.Status.StorageBackendJobs, newJob, r.MaxJobHistory)
-		log.Info("backend provisioning job triggered", "jobID", result.JobID)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	}
-
-	return r.pollBackendProvisionJob(ctx, instance, latestJob)
-}
-
-func (r *StorageReconciler) pollBackendProvisionJob(ctx context.Context, instance *v1alpha1.Tenant, latestJob *v1alpha1.JobStatus) (ctrl.Result, error) {
-	log := ctrllog.FromContext(ctx)
-
-	status, err := r.BackendProvider.GetProvisionStatus(ctx, instance, latestJob.JobID)
-	if err != nil {
-		log.Error(err, "failed to get backend provision job status", "jobID", latestJob.JobID)
-		updatedJob := *latestJob
-		updatedJob.Message = fmt.Sprintf("Failed to get job status: %v", err)
-		provisioning.UpdateJob(instance.Status.StorageBackendJobs, updatedJob)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	}
-
-	updatedJob := *latestJob
-	updatedJob.State = status.State
-	updatedJob.Message = status.MessageWithDetails()
-	provisioning.UpdateJob(instance.Status.StorageBackendJobs, updatedJob)
-
-	if !status.State.IsTerminal() {
-		log.Info("backend provisioning job still running", "jobID", latestJob.JobID, "state", status.State)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	}
-
-	if status.State.IsSuccessful() {
-		log.Info("backend provisioning job succeeded, requeueing to confirm hub Secret", "jobID", latestJob.JobID)
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	log.Info("backend provisioning job failed", "jobID", latestJob.JobID, "message", updatedJob.Message)
-	return ctrl.Result{}, nil
+	return provisioning.RunProvisioningLifecycle(ctx, r.BackendProvider, instance,
+		&provisioning.State{Jobs: &instance.Status.StorageBackendJobs},
+		r.MaxJobHistory, r.StatusPollInterval, nil,
+		func() bool {
+			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.Client,
+				client.ObjectKeyFromObject(instance), &v1alpha1.Tenant{},
+				func(obj client.Object) []v1alpha1.JobStatus {
+					return obj.(*v1alpha1.Tenant).Status.StorageBackendJobs
+				})
+		},
+		func() error { return r.Status().Update(ctx, instance) },
+	)
 }
 
 // --- Stage 2: Cluster storage provisioning ---
 
 func (r *StorageReconciler) handleClusterStorageProvisioning(ctx context.Context, instance *v1alpha1.Tenant) (ctrl.Result, error) {
-	log := ctrllog.FromContext(ctx)
-
 	latestJob := provisioning.FindLatestJobByType(instance.Status.ClusterStorageJobs, v1alpha1.JobTypeProvision)
-
 	if latestJob != nil && latestJob.State == v1alpha1.JobStateFailed {
-		log.Info("latest class provision job failed, waiting for external trigger to retry",
+		ctrllog.FromContext(ctx).Info("latest cluster storage provision job failed, waiting for external trigger to retry",
 			"message", latestJob.Message)
 		return ctrl.Result{}, nil
 	}
 
-	if provisioning.NeedsProvisionJob(latestJob) {
-		log.Info("triggering class provisioning", "provider", r.ClusterStorageProvider.Name())
-		result, err := r.ClusterStorageProvider.TriggerProvision(ctx, instance)
-		if err != nil {
-			var rateLimitErr *provisioning.RateLimitError
-			if errors.As(err, &rateLimitErr) {
-				log.Info("class provisioning rate-limited, will retry", "retryAfter", rateLimitErr.RetryAfter)
-				return ctrl.Result{RequeueAfter: rateLimitErr.RetryAfter}, nil
-			}
-
-			log.Error(err, "failed to trigger class provisioning")
-			newJob := v1alpha1.JobStatus{
-				JobID:     "",
-				Type:      v1alpha1.JobTypeProvision,
-				Timestamp: metav1.NewTime(time.Now().UTC()),
-				State:     v1alpha1.JobStateFailed,
-				Message:   fmt.Sprintf("Failed to trigger class provisioning: %v", err),
-			}
-			instance.Status.ClusterStorageJobs = provisioning.AppendJob(instance.Status.ClusterStorageJobs, newJob, r.MaxJobHistory)
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		}
-
-		newJob := v1alpha1.JobStatus{
-			JobID:     result.JobID,
-			Type:      v1alpha1.JobTypeProvision,
-			Timestamp: metav1.NewTime(time.Now().UTC()),
-			State:     result.InitialState,
-			Message:   result.Message,
-		}
-		instance.Status.ClusterStorageJobs = provisioning.AppendJob(instance.Status.ClusterStorageJobs, newJob, r.MaxJobHistory)
-		log.Info("class provisioning job triggered", "jobID", result.JobID)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	}
-
-	return r.pollClusterStorageProvisionJob(ctx, instance, latestJob)
-}
-
-func (r *StorageReconciler) pollClusterStorageProvisionJob(ctx context.Context, instance *v1alpha1.Tenant, latestJob *v1alpha1.JobStatus) (ctrl.Result, error) {
-	log := ctrllog.FromContext(ctx)
-
-	status, err := r.ClusterStorageProvider.GetProvisionStatus(ctx, instance, latestJob.JobID)
-	if err != nil {
-		log.Error(err, "failed to get class provision job status", "jobID", latestJob.JobID)
-		updatedJob := *latestJob
-		updatedJob.Message = fmt.Sprintf("Failed to get job status: %v", err)
-		provisioning.UpdateJob(instance.Status.ClusterStorageJobs, updatedJob)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	}
-
-	updatedJob := *latestJob
-	updatedJob.State = status.State
-	updatedJob.Message = status.MessageWithDetails()
-	provisioning.UpdateJob(instance.Status.ClusterStorageJobs, updatedJob)
-
-	if !status.State.IsTerminal() {
-		log.Info("class provisioning job still running", "jobID", latestJob.JobID, "state", status.State)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	}
-
-	if status.State.IsSuccessful() {
-		log.Info("class provisioning job succeeded, requeueing to discover StorageClasses", "jobID", latestJob.JobID)
-		return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
-	}
-
-	log.Info("class provisioning job failed", "jobID", latestJob.JobID, "message", updatedJob.Message)
-	return ctrl.Result{}, nil
+	return provisioning.RunProvisioningLifecycle(ctx, r.ClusterStorageProvider, instance,
+		&provisioning.State{Jobs: &instance.Status.ClusterStorageJobs},
+		r.MaxJobHistory, r.StatusPollInterval, nil,
+		func() bool {
+			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.Client,
+				client.ObjectKeyFromObject(instance), &v1alpha1.Tenant{},
+				func(obj client.Object) []v1alpha1.JobStatus {
+					return obj.(*v1alpha1.Tenant).Status.ClusterStorageJobs
+				})
+		},
+		func() error { return r.Status().Update(ctx, instance) },
+	)
 }
 
 // --- Deprovisioning ---
 
 func (r *StorageReconciler) handleClusterStorageDeprovisioning(ctx context.Context, instance *v1alpha1.Tenant) (ctrl.Result, error) {
-	log := ctrllog.FromContext(ctx)
-
 	if r.ClusterStorageProvider == nil {
-		log.Info("no class provider configured, skipping cluster-side cleanup")
+		ctrllog.FromContext(ctx).Info("no class provider configured, skipping cluster-side cleanup")
 		return ctrl.Result{}, nil
 	}
 
-	latestJob := provisioning.FindLatestJobByType(instance.Status.ClusterStorageJobs, v1alpha1.JobTypeDeprovision)
-
-	if latestJob == nil || latestJob.JobID == "" {
-		log.Info("triggering class deprovisioning", "provider", r.ClusterStorageProvider.Name())
-		result, err := r.ClusterStorageProvider.TriggerDeprovision(ctx, instance)
-		if err != nil {
-			var rateLimitErr *provisioning.RateLimitError
-			if errors.As(err, &rateLimitErr) {
-				return ctrl.Result{RequeueAfter: rateLimitErr.RetryAfter}, nil
-			}
-			log.Error(err, "failed to trigger class deprovisioning")
-			newJob := v1alpha1.JobStatus{
-				JobID:     "",
-				Type:      v1alpha1.JobTypeDeprovision,
-				Timestamp: metav1.NewTime(time.Now().UTC()),
-				State:     v1alpha1.JobStateFailed,
-				Message:   fmt.Sprintf("Failed to trigger class deprovisioning: %v", err),
-			}
-			instance.Status.ClusterStorageJobs = provisioning.AppendJob(instance.Status.ClusterStorageJobs, newJob, r.MaxJobHistory)
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		}
-
-		switch result.Action {
-		case provisioning.DeprovisionTriggered:
-			newJob := v1alpha1.JobStatus{
-				JobID:                  result.JobID,
-				Type:                   v1alpha1.JobTypeDeprovision,
-				Timestamp:              metav1.NewTime(time.Now().UTC()),
-				State:                  v1alpha1.JobStatePending,
-				Message:                "Class deprovisioning job triggered",
-				BlockDeletionOnFailure: result.BlockDeletionOnFailure,
-			}
-			instance.Status.ClusterStorageJobs = provisioning.AppendJob(instance.Status.ClusterStorageJobs, newJob, r.MaxJobHistory)
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		case provisioning.DeprovisionSkipped:
-			return ctrl.Result{}, nil
-		case provisioning.DeprovisionWaiting:
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		default:
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		}
+	result, done, err := provisioning.RunDeprovisioningLifecycle(ctx, r.ClusterStorageProvider, instance,
+		&instance.Status.ClusterStorageJobs, r.MaxJobHistory, r.StatusPollInterval)
+	if err != nil || !done {
+		return result, err
 	}
-
-	return r.pollDeprovisionJob(ctx, instance, &instance.Status.ClusterStorageJobs, latestJob, r.ClusterStorageProvider)
+	return ctrl.Result{}, nil
 }
 
 func (r *StorageReconciler) handleBackendDeprovisioning(ctx context.Context, instance *v1alpha1.Tenant) (ctrl.Result, error) {
@@ -511,104 +367,21 @@ func (r *StorageReconciler) handleBackendDeprovisioning(ctx context.Context, ins
 	}
 
 	latestJob := provisioning.FindLatestJobByType(instance.Status.StorageBackendJobs, v1alpha1.JobTypeDeprovision)
-	deprovJobRunning := latestJob != nil && latestJob.JobID != "" && !latestJob.State.IsTerminal()
-	deprovJobFailedBlocking := latestJob != nil &&
+	deprovJobActive := latestJob != nil && latestJob.JobID != "" && !latestJob.State.IsTerminal()
+	deprovJobBlocking := latestJob != nil &&
 		latestJob.State.IsTerminal() &&
 		!latestJob.State.IsSuccessful() &&
 		latestJob.BlockDeletionOnFailure
 
-	if !hubSecretReady && !deprovJobRunning && !deprovJobFailedBlocking {
+	if !hubSecretReady && !deprovJobActive && !deprovJobBlocking {
 		return ctrl.Result{}, nil
 	}
 
-	if latestJob == nil || latestJob.JobID == "" {
-		log.Info("triggering backend deprovisioning", "provider", r.BackendProvider.Name())
-		result, err := r.BackendProvider.TriggerDeprovision(ctx, instance)
-		if err != nil {
-			var rateLimitErr *provisioning.RateLimitError
-			if errors.As(err, &rateLimitErr) {
-				return ctrl.Result{RequeueAfter: rateLimitErr.RetryAfter}, nil
-			}
-			log.Error(err, "failed to trigger backend deprovisioning")
-			newJob := v1alpha1.JobStatus{
-				JobID:     "",
-				Type:      v1alpha1.JobTypeDeprovision,
-				Timestamp: metav1.NewTime(time.Now().UTC()),
-				State:     v1alpha1.JobStateFailed,
-				Message:   fmt.Sprintf("Failed to trigger backend deprovisioning: %v", err),
-			}
-			instance.Status.StorageBackendJobs = provisioning.AppendJob(instance.Status.StorageBackendJobs, newJob, r.MaxJobHistory)
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		}
-
-		switch result.Action {
-		case provisioning.DeprovisionTriggered:
-			newJob := v1alpha1.JobStatus{
-				JobID:                  result.JobID,
-				Type:                   v1alpha1.JobTypeDeprovision,
-				Timestamp:              metav1.NewTime(time.Now().UTC()),
-				State:                  v1alpha1.JobStatePending,
-				Message:                "Backend deprovisioning job triggered",
-				BlockDeletionOnFailure: result.BlockDeletionOnFailure,
-			}
-			instance.Status.StorageBackendJobs = provisioning.AppendJob(instance.Status.StorageBackendJobs, newJob, r.MaxJobHistory)
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		case provisioning.DeprovisionSkipped:
-			return ctrl.Result{}, nil
-		case provisioning.DeprovisionWaiting:
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		default:
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		}
+	result, done, err := provisioning.RunDeprovisioningLifecycle(ctx, r.BackendProvider, instance,
+		&instance.Status.StorageBackendJobs, r.MaxJobHistory, r.StatusPollInterval)
+	if err != nil || !done {
+		return result, err
 	}
-
-	return r.pollDeprovisionJob(ctx, instance, &instance.Status.StorageBackendJobs, latestJob, r.BackendProvider)
-}
-
-func (r *StorageReconciler) pollDeprovisionJob(ctx context.Context, instance *v1alpha1.Tenant, jobs *[]v1alpha1.JobStatus, latestJob *v1alpha1.JobStatus, provider provisioning.ProvisioningProvider) (ctrl.Result, error) {
-	log := ctrllog.FromContext(ctx)
-
-	if latestJob.State.IsTerminal() {
-		if !latestJob.State.IsSuccessful() && latestJob.BlockDeletionOnFailure {
-			log.Info("deprovisioning job failed, blocking deletion",
-				"jobID", latestJob.JobID, "state", latestJob.State)
-			return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-		}
-		return ctrl.Result{}, nil
-	}
-
-	status, err := provider.GetDeprovisionStatus(ctx, instance, latestJob.JobID)
-	if err != nil {
-		log.Error(err, "failed to get deprovision job status", "jobID", latestJob.JobID)
-		updatedJob := *latestJob
-		updatedJob.Message = fmt.Sprintf("Failed to get job status: %v", err)
-		provisioning.UpdateJob(*jobs, updatedJob)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	}
-
-	updatedJob := *latestJob
-	updatedJob.State = status.State
-	updatedJob.Message = status.MessageWithDetails()
-	provisioning.UpdateJob(*jobs, updatedJob)
-
-	if !status.State.IsTerminal() {
-		log.Info("deprovisioning job still running", "jobID", latestJob.JobID, "state", status.State)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	}
-
-	if status.State.IsSuccessful() {
-		log.Info("deprovisioning job succeeded", "jobID", latestJob.JobID)
-		return ctrl.Result{}, nil
-	}
-
-	if latestJob.BlockDeletionOnFailure {
-		log.Info("deprovisioning job failed, blocking deletion",
-			"jobID", latestJob.JobID, "message", updatedJob.Message)
-		return ctrl.Result{RequeueAfter: r.StatusPollInterval}, nil
-	}
-
-	log.Info("deprovisioning job failed, continuing with deletion",
-		"jobID", latestJob.JobID, "message", updatedJob.Message)
 	return ctrl.Result{}, nil
 }
 
@@ -625,6 +398,9 @@ func (r *StorageReconciler) hubSecretExists(ctx context.Context, tenantName stri
 	return len(secretList.Items) > 0, nil
 }
 
+// storageConfigNamespace returns the namespace where storage config Secrets are stored.
+// In production, OSAC_STORAGE_CONFIG_NAMESPACE is set by the Helm chart or kustomize
+// overlay to match the deployment namespace. The fallback is for local development only.
 func storageConfigNamespace() string {
 	if ns := os.Getenv("OSAC_STORAGE_CONFIG_NAMESPACE"); ns != "" {
 		return ns

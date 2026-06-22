@@ -427,7 +427,7 @@ var _ = Describe("PublicIPAttachmentReconciler", func() {
 
 			deprovisionCalled := false
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				deprovisionCalled = true
 				return &provisioning.DeprovisionResult{
@@ -455,7 +455,7 @@ var _ = Describe("PublicIPAttachmentReconciler", func() {
 			setupReconciler(fakeClient)
 
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action: provisioning.DeprovisionTriggered,
@@ -496,7 +496,7 @@ var _ = Describe("PublicIPAttachmentReconciler", func() {
 			Expect(fakeClient.Status().Update(testCtx, pip)).To(Succeed())
 
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action: provisioning.DeprovisionSkipped,
@@ -522,7 +522,7 @@ var _ = Describe("PublicIPAttachmentReconciler", func() {
 			setupReconciler(fakeClient)
 
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action:                 provisioning.DeprovisionTriggered,

@@ -402,7 +402,7 @@ var _ = Describe("PublicIPReconciler", func() {
 
 			deprovisionCalled := false
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				deprovisionCalled = true
 				return &provisioning.DeprovisionResult{
@@ -437,7 +437,7 @@ var _ = Describe("PublicIPReconciler", func() {
 			key := types.NamespacedName{Name: publicIP.Name, Namespace: publicIP.Namespace}
 
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action:                 provisioning.DeprovisionTriggered,
@@ -499,7 +499,7 @@ var _ = Describe("PublicIPReconciler", func() {
 
 			deprovisionCalled := false
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				deprovisionCalled = true
 				return &provisioning.DeprovisionResult{
@@ -694,7 +694,7 @@ var _ = Describe("PublicIPReconciler", func() {
 			// reaching the finalizer-removal Update (which the envtest server
 			// rejects when DeletionTimestamp is set in-memory).
 			mockProvider.triggerDeprovisionFunc = func(
-				_ context.Context, _ client.Object,
+				_ context.Context, _ client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action: provisioning.DeprovisionTriggered,

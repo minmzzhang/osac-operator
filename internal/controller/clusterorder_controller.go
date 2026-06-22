@@ -548,7 +548,7 @@ func (r *ClusterOrderReconciler) handleProvisioning(ctx context.Context, instanc
 			},
 		},
 		func() bool {
-			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.apiReader, client.ObjectKeyFromObject(instance), &v1alpha1.ClusterOrder{})
+			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.apiReader, client.ObjectKeyFromObject(instance), &v1alpha1.ClusterOrder{}, func(obj client.Object) []v1alpha1.JobStatus { return obj.(*v1alpha1.ClusterOrder).Status.ProvisioningJobs })
 		},
 		func() error { return r.Status().Update(ctx, instance) },
 	)

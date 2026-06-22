@@ -46,7 +46,7 @@ func (m *mockProvider) TriggerProvision(ctx context.Context, resource client.Obj
 func (m *mockProvider) GetProvisionStatus(_ context.Context, _ client.Object, jobID string) (ProvisionStatus, error) {
 	return ProvisionStatus{JobID: jobID, State: v1alpha1.JobStateSucceeded}, nil
 }
-func (m *mockProvider) TriggerDeprovision(ctx context.Context, resource client.Object) (*DeprovisionResult, error) {
+func (m *mockProvider) TriggerDeprovision(ctx context.Context, resource client.Object, provisionJobs []v1alpha1.JobStatus) (*DeprovisionResult, error) {
 	return m.triggerDeprovisionFunc(ctx, resource)
 }
 func (m *mockProvider) GetDeprovisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error) {
@@ -440,25 +440,6 @@ var _ = ginkgo.Describe("FindLatestJobByType", func() {
 		Expect(result).NotTo(BeNil())
 		// When timestamps are equal, returns first one found
 		Expect(result.JobID).To(Equal("job1"))
-	})
-})
-
-var _ = ginkgo.Describe("GetJobsFromResource", func() {
-	ginkgo.It("returns jobs from ComputeInstance", func() {
-		ci := &v1alpha1.ComputeInstance{}
-		ci.Status.ProvisioningJobs = []v1alpha1.JobStatus{{JobID: "j1"}}
-		Expect(GetJobsFromResource(ci)).To(HaveLen(1))
-	})
-
-	ginkgo.It("returns jobs from ClusterOrder", func() {
-		co := &v1alpha1.ClusterOrder{}
-		co.Status.ProvisioningJobs = []v1alpha1.JobStatus{{JobID: "j1"}, {JobID: "j2"}}
-		Expect(GetJobsFromResource(co)).To(HaveLen(2))
-	})
-
-	ginkgo.It("returns nil for unsupported type", func() {
-		subnet := &v1alpha1.Subnet{}
-		Expect(GetJobsFromResource(subnet)).To(BeNil())
 	})
 })
 

@@ -531,7 +531,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 
 			// Setup deprovision mock
 			deprovisionCalled := false
-			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 				deprovisionCalled = true
 				return &provisioning.DeprovisionResult{
 					Action:                 provisioning.DeprovisionTriggered,
@@ -570,7 +570,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			key := types.NamespacedName{Name: sg.Name, Namespace: sg.Namespace}
 
 			// Setup deprovision to succeed
-			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action:                 provisioning.DeprovisionTriggered,
 					JobID:                  "deprovision-success",
@@ -617,7 +617,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			// Reconcile and exercise the DeletionTimestamp.IsZero() guard.
 			envMockProvider := &mockProvisioningProvider{
 				name: "mock-aap",
-				triggerDeprovisionFunc: func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+				triggerDeprovisionFunc: func(ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 					return &provisioning.DeprovisionResult{
 						Action: provisioning.DeprovisionSkipped,
 					}, nil

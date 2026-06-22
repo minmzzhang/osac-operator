@@ -328,7 +328,7 @@ func (r *PublicIPAttachmentReconciler) handleProvisioning(
 		},
 		func() bool {
 			return provisioning.CheckAPIServerForNonTerminalProvisionJob(
-				ctx, r.APIReader, client.ObjectKeyFromObject(attachment), &v1alpha1.PublicIPAttachment{})
+				ctx, r.APIReader, client.ObjectKeyFromObject(attachment), &v1alpha1.PublicIPAttachment{}, func(obj client.Object) []v1alpha1.JobStatus { return obj.(*v1alpha1.PublicIPAttachment).Status.ProvisioningJobs })
 		},
 		func() error {
 			return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(attachment), attachment.Status)

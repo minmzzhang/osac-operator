@@ -317,7 +317,7 @@ var _ = Describe("SubnetReconciler", func() {
 			key := types.NamespacedName{Name: managedThenUnmanaged.Name, Namespace: managedThenUnmanaged.Namespace}
 
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action: provisioning.DeprovisionSkipped,
@@ -534,7 +534,7 @@ var _ = Describe("SubnetReconciler", func() {
 
 	Context("handleDeprovisioning", func() {
 		It("should trigger deprovisioning when no deprovision job exists", func() {
-			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action:                 provisioning.DeprovisionTriggered,
 					JobID:                  "deprovision-job-303",
@@ -553,7 +553,7 @@ var _ = Describe("SubnetReconciler", func() {
 		})
 
 		It("should skip deprovisioning when provider returns DeprovisionSkipped", func() {
-			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action: provisioning.DeprovisionSkipped,
 				}, nil
@@ -620,7 +620,7 @@ var _ = Describe("SubnetReconciler", func() {
 type mockSubnetProvider struct {
 	triggerProvisionFunc     func(ctx context.Context, resource client.Object) (*provisioning.ProvisionResult, error)
 	getProvisionStatusFunc   func(ctx context.Context, resource client.Object, jobID string) (provisioning.ProvisionStatus, error)
-	triggerDeprovisionFunc   func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error)
+	triggerDeprovisionFunc   func(ctx context.Context, resource client.Object, provisionJobs []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error)
 	getDeprovisionStatusFunc func(ctx context.Context, resource client.Object, jobID string) (provisioning.ProvisionStatus, error)
 }
 
@@ -646,9 +646,9 @@ func (m *mockSubnetProvider) GetProvisionStatus(ctx context.Context, resource cl
 	}, nil
 }
 
-func (m *mockSubnetProvider) TriggerDeprovision(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+func (m *mockSubnetProvider) TriggerDeprovision(ctx context.Context, resource client.Object, provisionJobs []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 	if m.triggerDeprovisionFunc != nil {
-		return m.triggerDeprovisionFunc(ctx, resource)
+		return m.triggerDeprovisionFunc(ctx, resource, provisionJobs)
 	}
 	return &provisioning.DeprovisionResult{
 		Action:                 provisioning.DeprovisionTriggered,
