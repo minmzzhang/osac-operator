@@ -232,7 +232,9 @@ func (r *SecurityGroupReconciler) handleProvisioning(ctx context.Context, sg *v1
 			OnSuccess: func(_ provisioning.ProvisionStatus) { sg.Status.Phase = v1alpha1.SecurityGroupPhaseReady },
 		},
 		func() bool {
-			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(sg), &v1alpha1.SecurityGroup{}, func(obj client.Object) []v1alpha1.JobStatus { return obj.(*v1alpha1.SecurityGroup).Status.ProvisioningJobs })
+			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(sg), &v1alpha1.SecurityGroup{}, func(obj client.Object) []v1alpha1.JobStatus {
+				return obj.(*v1alpha1.SecurityGroup).Status.ProvisioningJobs
+			})
 		},
 		func() error {
 			return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(sg), sg.Status)
