@@ -244,7 +244,7 @@ func (r *PublicIPReconciler) handleUpdate(ctx context.Context, publicIP *v1alpha
 	// Transition to Progressing on first provision or when spec changed after a previous
 	// success. Don't override Failed during backoff (the provisioning lifecycle handles retry).
 	if publicIP.Status.Phase == "" || (publicIP.Status.Phase == v1alpha1.PublicIPPhaseReady &&
-		!provisioning.IsConfigApplied(&publicIP.Status.Jobs, publicIP.Status.DesiredConfigVersion)) {
+		!provisioning.IsConfigApplied(&publicIP.Status.ProvisioningJobs, publicIP.Status.DesiredConfigVersion)) {
 		publicIP.Status.Phase = v1alpha1.PublicIPPhaseProgressing
 		if publicIP.Status.State == "" {
 			publicIP.Status.State = v1alpha1.PublicIPStatePending
@@ -328,7 +328,7 @@ func (r *PublicIPReconciler) handleProvisioning(ctx context.Context, publicIP *v
 	}
 
 	return provisioning.RunProvisioningLifecycle(ctx, r.ProvisioningProvider, publicIP,
-		&provisioning.State{Jobs: &publicIP.Status.Jobs, DesiredConfigVersion: publicIP.Status.DesiredConfigVersion},
+		&provisioning.State{Jobs: &publicIP.Status.ProvisioningJobs, DesiredConfigVersion: publicIP.Status.DesiredConfigVersion},
 		r.MaxJobHistory, r.StatusPollInterval,
 		&provisioning.PollCallbacks{
 			OnFailed: func(_ string) {
@@ -351,7 +351,7 @@ func (r *PublicIPReconciler) handleProvisioning(ctx context.Context, publicIP *v
 		},
 		func() bool {
 			return provisioning.CheckAPIServerForNonTerminalProvisionJob(
-				ctx, r.APIReader, client.ObjectKeyFromObject(publicIP), &v1alpha1.PublicIP{})
+				ctx, r.APIReader, client.ObjectKeyFromObject(publicIP), &v1alpha1.PublicIP{}, func(obj client.Object) []v1alpha1.JobStatus { return obj.(*v1alpha1.PublicIP).Status.ProvisioningJobs })
 		},
 		func() error { return r.Status().Update(ctx, publicIP) },
 	)
@@ -366,7 +366,7 @@ func (r *PublicIPReconciler) handleDeprovisioning(ctx context.Context, publicIP 
 		return ctrl.Result{}, nil
 	}
 	result, done, err := provisioning.RunDeprovisioningLifecycle(ctx, r.ProvisioningProvider, publicIP,
-		&publicIP.Status.Jobs, r.MaxJobHistory, r.StatusPollInterval)
+		&publicIP.Status.ProvisioningJobs, r.MaxJobHistory, r.StatusPollInterval)
 	if err != nil || !done {
 		return result, err
 	}

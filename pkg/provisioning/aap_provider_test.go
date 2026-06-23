@@ -532,7 +532,7 @@ var _ = Describe("AAPProvider", func() {
 			})
 
 			It("should launch job template and return job ID", func() {
-				result, err := provider.TriggerDeprovision(ctx, instance)
+				result, err := provider.TriggerDeprovision(ctx, instance, instance.Status.ProvisioningJobs)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.Action).To(Equal(provisioning.DeprovisionTriggered))
 				Expect(result.JobID).To(Equal("999"))
@@ -546,7 +546,7 @@ var _ = Describe("AAPProvider", func() {
 			})
 
 			It("should return error", func() {
-				_, err := provider.TriggerDeprovision(ctx, instance)
+				_, err := provider.TriggerDeprovision(ctx, instance, instance.Status.ProvisioningJobs)
 				Expect(err).To(HaveOccurred())
 				Expect(err.Error()).To(ContainSubstring("delete template not configured"))
 			})
@@ -559,7 +559,7 @@ var _ = Describe("AAPProvider", func() {
 					return &aap.Template{ID: 1, Name: templateName, Type: aap.TemplateTypeJob}, nil
 				}
 				instance.Status.Phase = v1alpha1.ComputeInstancePhaseStarting
-				instance.Status.Jobs = []v1alpha1.JobStatus{
+				instance.Status.ProvisioningJobs = []v1alpha1.JobStatus{
 					{
 						JobID:     "9876",
 						Type:      v1alpha1.JobTypeProvision,
@@ -581,7 +581,7 @@ var _ = Describe("AAPProvider", func() {
 			})
 
 			It("should check AAP job status and cancel if running", func() {
-				result, err := provider.TriggerDeprovision(ctx, instance)
+				result, err := provider.TriggerDeprovision(ctx, instance, instance.Status.ProvisioningJobs)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.Action).To(Equal(provisioning.DeprovisionWaiting))
 				Expect(result.ProvisionJobStatus).NotTo(BeNil())
@@ -600,7 +600,7 @@ var _ = Describe("AAPProvider", func() {
 					return &aap.LaunchJobTemplateResponse{JobID: 999}, nil
 				}
 				instance.Status.Phase = v1alpha1.ComputeInstancePhaseStarting
-				instance.Status.Jobs = []v1alpha1.JobStatus{
+				instance.Status.ProvisioningJobs = []v1alpha1.JobStatus{
 					{
 						JobID:     "9876",
 						Type:      v1alpha1.JobTypeProvision,
@@ -622,7 +622,7 @@ var _ = Describe("AAPProvider", func() {
 			})
 
 			It("should proceed to deprovision immediately", func() {
-				result, err := provider.TriggerDeprovision(ctx, instance)
+				result, err := provider.TriggerDeprovision(ctx, instance, instance.Status.ProvisioningJobs)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(result.Action).To(Equal(provisioning.DeprovisionTriggered))
 				Expect(result.JobID).To(Equal("999"))
@@ -702,7 +702,7 @@ var _ = Describe("AAPProvider", func() {
 			}
 			subnet.SetGroupVersionKind(v1alpha1.GroupVersion.WithKind("Subnet"))
 
-			result, err := provider.TriggerDeprovision(ctx, subnet)
+			result, err := provider.TriggerDeprovision(ctx, subnet, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Action).To(Equal(provisioning.DeprovisionTriggered))
 			Expect(result.JobID).To(Equal("200"))
@@ -774,7 +774,7 @@ var _ = Describe("AAPProvider", func() {
 					Phase: v1alpha1.ClusterOrderPhaseReady,
 				},
 			}
-			result, err := provider.TriggerDeprovision(ctx, clusterOrder)
+			result, err := provider.TriggerDeprovision(ctx, clusterOrder, nil)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.Action).To(Equal(provisioning.DeprovisionTriggered))
 			Expect(result.JobID).To(Equal("100"))

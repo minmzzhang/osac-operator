@@ -402,7 +402,7 @@ var _ = Describe("PublicIPReconciler", func() {
 
 			deprovisionCalled := false
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				deprovisionCalled = true
 				return &provisioning.DeprovisionResult{
@@ -428,7 +428,7 @@ var _ = Describe("PublicIPReconciler", func() {
 			Expect(deprovisionCalled).To(BeTrue())
 			Expect(toDelete.Status.Phase).To(Equal(osacv1alpha1.PublicIPPhaseDeleting))
 
-			latestJob := provisioning.FindLatestJobByType(toDelete.Status.Jobs, osacv1alpha1.JobTypeDeprovision)
+			latestJob := provisioning.FindLatestJobByType(toDelete.Status.ProvisioningJobs, osacv1alpha1.JobTypeDeprovision)
 			Expect(latestJob).NotTo(BeNil())
 			Expect(latestJob.JobID).To(Equal("deprovision-job-123"))
 		})
@@ -437,7 +437,7 @@ var _ = Describe("PublicIPReconciler", func() {
 			key := types.NamespacedName{Name: publicIP.Name, Namespace: publicIP.Namespace}
 
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action:                 provisioning.DeprovisionTriggered,
@@ -499,7 +499,7 @@ var _ = Describe("PublicIPReconciler", func() {
 
 			deprovisionCalled := false
 			mockProvider.triggerDeprovisionFunc = func(
-				ctx context.Context, resource client.Object,
+				ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				deprovisionCalled = true
 				return &provisioning.DeprovisionResult{
@@ -694,7 +694,7 @@ var _ = Describe("PublicIPReconciler", func() {
 			// reaching the finalizer-removal Update (which the envtest server
 			// rejects when DeletionTimestamp is set in-memory).
 			mockProvider.triggerDeprovisionFunc = func(
-				_ context.Context, _ client.Object,
+				_ context.Context, _ client.Object, _ []osacv1alpha1.JobStatus,
 			) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action: provisioning.DeprovisionTriggered,
@@ -751,7 +751,7 @@ var _ = Describe("PublicIPReconciler", func() {
 	Context("backoff on failure", func() {
 		It("should backoff when latest job failed with matching ConfigVersion", func() {
 			publicIP.Status.DesiredConfigVersion = testConfigVersion
-			publicIP.Status.Jobs = []osacv1alpha1.JobStatus{
+			publicIP.Status.ProvisioningJobs = []osacv1alpha1.JobStatus{
 				{
 					JobID:         "failed-job",
 					Type:          osacv1alpha1.JobTypeProvision,
@@ -781,7 +781,7 @@ var _ = Describe("PublicIPReconciler", func() {
 			// The desired version is "version-2" but the failed job was for "version-1",
 			// meaning the spec changed. The controller should retry immediately.
 			publicIP.Status.DesiredConfigVersion = testConfigVersionUpdated
-			publicIP.Status.Jobs = []osacv1alpha1.JobStatus{
+			publicIP.Status.ProvisioningJobs = []osacv1alpha1.JobStatus{
 				{
 					JobID:         "failed-job",
 					Type:          osacv1alpha1.JobTypeProvision,
@@ -796,7 +796,7 @@ var _ = Describe("PublicIPReconciler", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(1 * time.Second))
 
-			latestJob := provisioning.FindLatestJobByType(publicIP.Status.Jobs, osacv1alpha1.JobTypeProvision)
+			latestJob := provisioning.FindLatestJobByType(publicIP.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision)
 			Expect(latestJob).NotTo(BeNil())
 			Expect(latestJob.JobID).To(Equal("retry-job"))
 		})

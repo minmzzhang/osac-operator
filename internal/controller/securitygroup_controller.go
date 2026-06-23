@@ -182,7 +182,7 @@ func (r *SecurityGroupReconciler) handleUpdate(ctx context.Context, sg *v1alpha1
 	// Set phase to Progressing only on first provision (empty phase) or when spec changed
 	// after a previous success. Don't override Failed during backoff.
 	if sg.Status.Phase == "" || (sg.Status.Phase == v1alpha1.SecurityGroupPhaseReady &&
-		!provisioning.IsConfigApplied(&sg.Status.Jobs, sg.Status.DesiredConfigVersion)) {
+		!provisioning.IsConfigApplied(&sg.Status.ProvisioningJobs, sg.Status.DesiredConfigVersion)) {
 		sg.Status.Phase = v1alpha1.SecurityGroupPhaseProgressing
 	}
 
@@ -225,14 +225,16 @@ func (r *SecurityGroupReconciler) handleProvisioning(ctx context.Context, sg *v1
 	}
 
 	return provisioning.RunProvisioningLifecycle(ctx, r.ProvisioningProvider, sg,
-		&provisioning.State{Jobs: &sg.Status.Jobs, DesiredConfigVersion: sg.Status.DesiredConfigVersion},
+		&provisioning.State{Jobs: &sg.Status.ProvisioningJobs, DesiredConfigVersion: sg.Status.DesiredConfigVersion},
 		r.MaxJobHistory, r.StatusPollInterval,
 		&provisioning.PollCallbacks{
 			OnFailed:  func(_ string) { sg.Status.Phase = v1alpha1.SecurityGroupPhaseFailed },
 			OnSuccess: func(_ provisioning.ProvisionStatus) { sg.Status.Phase = v1alpha1.SecurityGroupPhaseReady },
 		},
 		func() bool {
-			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(sg), &v1alpha1.SecurityGroup{})
+			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(sg), &v1alpha1.SecurityGroup{}, func(obj client.Object) []v1alpha1.JobStatus {
+				return obj.(*v1alpha1.SecurityGroup).Status.ProvisioningJobs
+			})
 		},
 		func() error {
 			return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(sg), sg.Status)
@@ -248,7 +250,7 @@ func (r *SecurityGroupReconciler) handleDeprovisioning(ctx context.Context, sg *
 		return ctrl.Result{}, nil
 	}
 	result, done, err := provisioning.RunDeprovisioningLifecycle(ctx, r.ProvisioningProvider, sg,
-		&sg.Status.Jobs, r.MaxJobHistory, r.StatusPollInterval)
+		&sg.Status.ProvisioningJobs, r.MaxJobHistory, r.StatusPollInterval)
 	if err != nil || !done {
 		return result, err
 	}

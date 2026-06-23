@@ -195,7 +195,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			// Verify the job was persisted
 			updated := &osacv1alpha1.SecurityGroup{}
 			Expect(fakeClient.Get(ctx, key, updated)).To(Succeed())
-			latestJob := provisioning.FindLatestJobByType(updated.Status.Jobs, osacv1alpha1.JobTypeProvision)
+			latestJob := provisioning.FindLatestJobByType(updated.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision)
 			Expect(latestJob).NotTo(BeNil())
 			Expect(latestJob.JobID).To(Equal("concurrent-job-123"))
 		})
@@ -406,7 +406,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			Expect(fakeClient.Get(ctx, key, updated)).To(Succeed())
 
 			// Verify job was created
-			latestJob := provisioning.FindLatestJobByType(updated.Status.Jobs, osacv1alpha1.JobTypeProvision)
+			latestJob := provisioning.FindLatestJobByType(updated.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision)
 			Expect(latestJob).NotTo(BeNil())
 			Expect(latestJob.JobID).To(Equal("job-456"))
 			Expect(latestJob.State).To(Equal(osacv1alpha1.JobStatePending))
@@ -531,7 +531,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 
 			// Setup deprovision mock
 			deprovisionCalled := false
-			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 				deprovisionCalled = true
 				return &provisioning.DeprovisionResult{
 					Action:                 provisioning.DeprovisionTriggered,
@@ -561,7 +561,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			Expect(deprovisionCalled).To(BeTrue())
 
 			// Verify deprovision job was added to the in-memory object
-			latestJob := provisioning.FindLatestJobByType(toDelete.Status.Jobs, osacv1alpha1.JobTypeDeprovision)
+			latestJob := provisioning.FindLatestJobByType(toDelete.Status.ProvisioningJobs, osacv1alpha1.JobTypeDeprovision)
 			Expect(latestJob).NotTo(BeNil())
 			Expect(latestJob.JobID).To(Equal("deprovision-job-123"))
 		})
@@ -570,7 +570,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			key := types.NamespacedName{Name: sg.Name, Namespace: sg.Namespace}
 
 			// Setup deprovision to succeed
-			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+			mockProvider.triggerDeprovisionFunc = func(ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 				return &provisioning.DeprovisionResult{
 					Action:                 provisioning.DeprovisionTriggered,
 					JobID:                  "deprovision-success",
@@ -617,7 +617,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			// Reconcile and exercise the DeletionTimestamp.IsZero() guard.
 			envMockProvider := &mockProvisioningProvider{
 				name: "mock-aap",
-				triggerDeprovisionFunc: func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+				triggerDeprovisionFunc: func(ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 					return &provisioning.DeprovisionResult{
 						Action: provisioning.DeprovisionSkipped,
 					}, nil
@@ -690,7 +690,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 	Context("backoff on failure", func() {
 		It("should backoff when latest job failed with matching ConfigVersion", func() {
 			sg.Status.DesiredConfigVersion = testConfigVersion
-			sg.Status.Jobs = []osacv1alpha1.JobStatus{
+			sg.Status.ProvisioningJobs = []osacv1alpha1.JobStatus{
 				{
 					JobID:         "failed-job",
 					Type:          osacv1alpha1.JobTypeProvision,
@@ -716,7 +716,7 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			}
 
 			sg.Status.DesiredConfigVersion = testConfigVersionUpdated
-			sg.Status.Jobs = []osacv1alpha1.JobStatus{
+			sg.Status.ProvisioningJobs = []osacv1alpha1.JobStatus{
 				{
 					JobID:         "failed-job",
 					Type:          osacv1alpha1.JobTypeProvision,
@@ -731,14 +731,14 @@ var _ = Describe("SecurityGroupReconciler", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(Equal(1 * time.Second))
 
-			latestJob := provisioning.FindLatestJobByType(sg.Status.Jobs, osacv1alpha1.JobTypeProvision)
+			latestJob := provisioning.FindLatestJobByType(sg.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision)
 			Expect(latestJob).NotTo(BeNil())
 			Expect(latestJob.JobID).To(Equal("retry-job"))
 		})
 
 		It("should skip when config already applied", func() {
 			sg.Status.DesiredConfigVersion = testConfigVersion
-			sg.Status.Jobs = []osacv1alpha1.JobStatus{
+			sg.Status.ProvisioningJobs = []osacv1alpha1.JobStatus{
 				{
 					JobID:         "succeeded-job",
 					Type:          osacv1alpha1.JobTypeProvision,

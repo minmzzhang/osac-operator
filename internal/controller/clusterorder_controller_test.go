@@ -92,11 +92,13 @@ var _ = Describe("ClusterOrder Controller", func() {
 
 		evaluateAction := func(instance *v1alpha1.ClusterOrder) (provisioning.Action, *v1alpha1.JobStatus) {
 			provState := &provisioning.State{
-				Jobs:                 &instance.Status.Jobs,
+				Jobs:                 &instance.Status.ProvisioningJobs,
 				DesiredConfigVersion: instance.Status.DesiredConfigVersion,
 			}
 			return provisioning.EvaluateAction(provState, func() bool {
-				return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, k8sClient, client.ObjectKeyFromObject(instance), &v1alpha1.ClusterOrder{})
+				return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, k8sClient, client.ObjectKeyFromObject(instance), &v1alpha1.ClusterOrder{}, func(obj client.Object) []v1alpha1.JobStatus {
+					return obj.(*v1alpha1.ClusterOrder).Status.ProvisioningJobs
+				})
 			})
 		}
 
@@ -115,7 +117,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 			instance := &v1alpha1.ClusterOrder{
 				Status: v1alpha1.ClusterOrderStatus{
 					DesiredConfigVersion: "abc123",
-					Jobs:                 []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: ""}},
+					ProvisioningJobs:     []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: ""}},
 				},
 			}
 			action, _ := evaluateAction(instance)
@@ -136,7 +138,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 		It("should poll when job is still running", func() {
 			instance := &v1alpha1.ClusterOrder{
 				Status: v1alpha1.ClusterOrderStatus{
-					Jobs: []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: "job-1", State: v1alpha1.JobStateRunning}},
+					ProvisioningJobs: []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: "job-1", State: v1alpha1.JobStateRunning}},
 				},
 			}
 			action, job := evaluateAction(instance)
@@ -148,7 +150,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 		It("should poll when job is pending", func() {
 			instance := &v1alpha1.ClusterOrder{
 				Status: v1alpha1.ClusterOrderStatus{
-					Jobs: []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: "job-1", State: v1alpha1.JobStatePending}},
+					ProvisioningJobs: []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: "job-1", State: v1alpha1.JobStatePending}},
 				},
 			}
 			action, job := evaluateAction(instance)
@@ -160,7 +162,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 			instance := &v1alpha1.ClusterOrder{
 				Status: v1alpha1.ClusterOrderStatus{
 					DesiredConfigVersion: "abc123",
-					Jobs:                 []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: "job-1", State: v1alpha1.JobStateSucceeded, ConfigVersion: "abc123"}},
+					ProvisioningJobs:     []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: "job-1", State: v1alpha1.JobStateSucceeded, ConfigVersion: "abc123"}},
 				},
 			}
 			action, job := evaluateAction(instance)
@@ -172,7 +174,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 			instance := &v1alpha1.ClusterOrder{
 				Status: v1alpha1.ClusterOrderStatus{
 					DesiredConfigVersion: "new-version",
-					Jobs:                 []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: "job-1", State: v1alpha1.JobStateSucceeded, ConfigVersion: "old-version"}},
+					ProvisioningJobs:     []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: "job-1", State: v1alpha1.JobStateSucceeded, ConfigVersion: "old-version"}},
 				},
 			}
 			action, job := evaluateAction(instance)
@@ -184,7 +186,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 			instance := &v1alpha1.ClusterOrder{
 				Status: v1alpha1.ClusterOrderStatus{
 					DesiredConfigVersion: "new-version",
-					Jobs:                 []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: "job-1", State: v1alpha1.JobStateFailed, ConfigVersion: "old-version"}},
+					ProvisioningJobs:     []v1alpha1.JobStatus{{Type: v1alpha1.JobTypeProvision, JobID: "job-1", State: v1alpha1.JobStateFailed, ConfigVersion: "old-version"}},
 				},
 			}
 			action, job := evaluateAction(instance)
@@ -196,7 +198,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 			instance := &v1alpha1.ClusterOrder{
 				Status: v1alpha1.ClusterOrderStatus{
 					DesiredConfigVersion: "abc123",
-					Jobs: []v1alpha1.JobStatus{{
+					ProvisioningJobs: []v1alpha1.JobStatus{{
 						Type:          v1alpha1.JobTypeProvision,
 						JobID:         "job-1",
 						State:         v1alpha1.JobStateSucceeded,
@@ -213,7 +215,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 			instance := &v1alpha1.ClusterOrder{
 				Status: v1alpha1.ClusterOrderStatus{
 					DesiredConfigVersion: "abc123",
-					Jobs: []v1alpha1.JobStatus{{
+					ProvisioningJobs: []v1alpha1.JobStatus{{
 						Type:          v1alpha1.JobTypeProvision,
 						JobID:         "job-1",
 						State:         v1alpha1.JobStateFailed,
@@ -230,7 +232,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 			instance := &v1alpha1.ClusterOrder{
 				Status: v1alpha1.ClusterOrderStatus{
 					DesiredConfigVersion: "new-version",
-					Jobs: []v1alpha1.JobStatus{{
+					ProvisioningJobs: []v1alpha1.JobStatus{{
 						Type:          v1alpha1.JobTypeProvision,
 						JobID:         "job-1",
 						State:         v1alpha1.JobStateFailed,
@@ -247,7 +249,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 			instance := &v1alpha1.ClusterOrder{
 				Status: v1alpha1.ClusterOrderStatus{
 					DesiredConfigVersion: "new-version",
-					Jobs: []v1alpha1.JobStatus{{
+					ProvisioningJobs: []v1alpha1.JobStatus{{
 						Type:          v1alpha1.JobTypeProvision,
 						JobID:         "job-1",
 						State:         v1alpha1.JobStateSucceeded,
@@ -278,7 +280,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 
 			jobTimestamp := metav1.NewTime(time.Now().UTC())
 			apiInstance.Status.DesiredConfigVersion = "v1"
-			apiInstance.Status.Jobs = []v1alpha1.JobStatus{
+			apiInstance.Status.ProvisioningJobs = []v1alpha1.JobStatus{
 				{Type: v1alpha1.JobTypeProvision, JobID: "running-job", State: v1alpha1.JobStateRunning, Timestamp: jobTimestamp},
 			}
 			Expect(k8sClient.Status().Update(ctx, apiInstance)).To(Succeed())
@@ -326,7 +328,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 			result, err := reconciler.handleProvisioning(ctx, instance)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeZero())
-			latestProvisionJob := provisioning.FindLatestJobByType(instance.Status.Jobs, v1alpha1.JobTypeProvision)
+			latestProvisionJob := provisioning.FindLatestJobByType(instance.Status.ProvisioningJobs, v1alpha1.JobTypeProvision)
 			Expect(latestProvisionJob).To(BeNil())
 		})
 	})
@@ -357,7 +359,7 @@ var _ = Describe("ClusterOrder Controller", func() {
 			result, err := reconciler.handleDeprovisioning(ctx, instance)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.RequeueAfter).To(BeZero())
-			latestDeprovisionJob := provisioning.FindLatestJobByType(instance.Status.Jobs, v1alpha1.JobTypeDeprovision)
+			latestDeprovisionJob := provisioning.FindLatestJobByType(instance.Status.ProvisioningJobs, v1alpha1.JobTypeDeprovision)
 			Expect(latestDeprovisionJob).To(BeNil())
 		})
 	})

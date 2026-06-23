@@ -219,7 +219,7 @@ func (r *SubnetReconciler) handleUpdate(ctx context.Context, subnet *v1alpha1.Su
 	// Set phase to Progressing only on first provision (empty phase) or when spec changed
 	// after a previous success. Don't override Failed during backoff.
 	if subnet.Status.Phase == "" || (subnet.Status.Phase == v1alpha1.SubnetPhaseReady &&
-		!provisioning.IsConfigApplied(&subnet.Status.Jobs, subnet.Status.DesiredConfigVersion)) {
+		!provisioning.IsConfigApplied(&subnet.Status.ProvisioningJobs, subnet.Status.DesiredConfigVersion)) {
 		subnet.Status.Phase = v1alpha1.SubnetPhaseProgressing
 	}
 
@@ -268,14 +268,14 @@ func (r *SubnetReconciler) handleProvisioning(ctx context.Context, subnet *v1alp
 	}
 
 	return provisioning.RunProvisioningLifecycle(ctx, r.ProvisioningProvider, subnet,
-		&provisioning.State{Jobs: &subnet.Status.Jobs, DesiredConfigVersion: subnet.Status.DesiredConfigVersion},
+		&provisioning.State{Jobs: &subnet.Status.ProvisioningJobs, DesiredConfigVersion: subnet.Status.DesiredConfigVersion},
 		r.MaxJobHistory, r.StatusPollInterval,
 		&provisioning.PollCallbacks{
 			OnFailed:  func(_ string) { subnet.Status.Phase = v1alpha1.SubnetPhaseFailed },
 			OnSuccess: func(_ provisioning.ProvisionStatus) { subnet.Status.Phase = v1alpha1.SubnetPhaseReady },
 		},
 		func() bool {
-			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(subnet), &v1alpha1.Subnet{})
+			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.APIReader, client.ObjectKeyFromObject(subnet), &v1alpha1.Subnet{}, func(obj client.Object) []v1alpha1.JobStatus { return obj.(*v1alpha1.Subnet).Status.ProvisioningJobs })
 		},
 		func() error {
 			return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(subnet), subnet.Status)
@@ -291,7 +291,7 @@ func (r *SubnetReconciler) handleDeprovisioning(ctx context.Context, subnet *v1a
 		return ctrl.Result{}, nil
 	}
 	result, done, err := provisioning.RunDeprovisioningLifecycle(ctx, r.ProvisioningProvider, subnet,
-		&subnet.Status.Jobs, r.MaxJobHistory, r.StatusPollInterval)
+		&subnet.Status.ProvisioningJobs, r.MaxJobHistory, r.StatusPollInterval)
 	if err != nil || !done {
 		return result, err
 	}

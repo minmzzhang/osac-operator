@@ -70,9 +70,11 @@ type ProvisioningProvider interface {
 	GetProvisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error)
 
 	// TriggerDeprovision attempts to deprovision a resource.
-	// The provider performs any prerequisite checks and returns an action indicating
-	// whether deprovisioning was triggered, needs to wait, or should be skipped.
-	TriggerDeprovision(ctx context.Context, resource client.Object) (*DeprovisionResult, error)
+	// The provider performs any prerequisite checks (e.g. cancelling a running provision job)
+	// and returns an action indicating whether deprovisioning was triggered, needs to wait,
+	// or should be skipped. provisionJobs is the current provision job history for the resource,
+	// used to find and cancel any running provision job before deprovisioning.
+	TriggerDeprovision(ctx context.Context, resource client.Object, provisionJobs []v1alpha1.JobStatus) (*DeprovisionResult, error)
 
 	// GetDeprovisionStatus checks the status of a deprovisioning job.
 	GetDeprovisionStatus(ctx context.Context, resource client.Object, jobID string) (ProvisionStatus, error)

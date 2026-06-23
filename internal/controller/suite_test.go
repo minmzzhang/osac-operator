@@ -146,7 +146,7 @@ func (noopProvisioningProvider) GetProvisionStatus(_ context.Context, _ client.O
 	return provisioning.ProvisionStatus{JobID: jobID, State: osacv1alpha1.JobStateUnknown}, nil
 }
 
-func (noopProvisioningProvider) TriggerDeprovision(_ context.Context, _ client.Object) (*provisioning.DeprovisionResult, error) {
+func (noopProvisioningProvider) TriggerDeprovision(_ context.Context, _ client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 	return &provisioning.DeprovisionResult{Action: provisioning.DeprovisionSkipped}, nil
 }
 

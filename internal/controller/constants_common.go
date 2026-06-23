@@ -47,8 +47,6 @@ const (
 	// VirtualNetwork's NetworkClass.
 	defaultSecurityGroupImplementationStrategy = "network_policy"
 
-	deprovisioningJobTriggeredMessage = "Deprovisioning job triggered"
-
 	conditionReasonConfigurationApplied  = "ConfigurationApplied"
 	conditionMessageConfigurationApplied = "Controller has processed the current spec"
 )

@@ -74,7 +74,7 @@ var _ = Describe("ClusterOrder Integration Tests", func() {
 
 	countProvisionJobs := func(instance *osacv1alpha1.ClusterOrder) int {
 		count := 0
-		for _, j := range instance.Status.Jobs {
+		for _, j := range instance.Status.ProvisioningJobs {
 			if j.Type == osacv1alpha1.JobTypeProvision {
 				count++
 			}
@@ -99,7 +99,7 @@ var _ = Describe("ClusterOrder Integration Tests", func() {
 			Expect(k8sClient.Status().Update(ctx, instance)).To(Succeed())
 
 			instance = getClusterOrder(name)
-			job := provisioning.FindLatestJobByType(instance.Status.Jobs, osacv1alpha1.JobTypeProvision)
+			job := provisioning.FindLatestJobByType(instance.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision)
 			Expect(job).NotTo(BeNil())
 			Expect(job.JobID).To(HavePrefix("prov-job-" + name))
 			Expect(job.State).To(Equal(osacv1alpha1.JobStatePending))
@@ -113,7 +113,7 @@ var _ = Describe("ClusterOrder Integration Tests", func() {
 			Expect(k8sClient.Status().Update(ctx, instance)).To(Succeed())
 
 			instance = getClusterOrder(name)
-			job = provisioning.FindLatestJobByType(instance.Status.Jobs, osacv1alpha1.JobTypeProvision)
+			job = provisioning.FindLatestJobByType(instance.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision)
 			Expect(job.State).To(Equal(osacv1alpha1.JobStateRunning))
 
 			// Simulate succeeded
@@ -124,7 +124,7 @@ var _ = Describe("ClusterOrder Integration Tests", func() {
 
 			Expect(k8sClient.Status().Update(ctx, instance)).To(Succeed())
 			instance = getClusterOrder(name)
-			job = provisioning.FindLatestJobByType(instance.Status.Jobs, osacv1alpha1.JobTypeProvision)
+			job = provisioning.FindLatestJobByType(instance.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision)
 			Expect(job.State).To(Equal(osacv1alpha1.JobStateSucceeded))
 		})
 
@@ -174,11 +174,13 @@ var _ = Describe("ClusterOrder Integration Tests", func() {
 			}
 
 			provState := &provisioning.State{
-				Jobs:                 &staleInstance.Status.Jobs,
+				Jobs:                 &staleInstance.Status.ProvisioningJobs,
 				DesiredConfigVersion: staleInstance.Status.DesiredConfigVersion,
 			}
 			action, _ := provisioning.EvaluateAction(provState, func() bool {
-				return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, k8sClient, client.ObjectKeyFromObject(staleInstance), &osacv1alpha1.ClusterOrder{})
+				return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, k8sClient, client.ObjectKeyFromObject(staleInstance), &osacv1alpha1.ClusterOrder{}, func(obj client.Object) []osacv1alpha1.JobStatus {
+					return obj.(*osacv1alpha1.ClusterOrder).Status.ProvisioningJobs
+				})
 			})
 			Expect(action).To(Equal(provisioning.Requeue), "should detect non-terminal job via API server and requeue")
 		})
@@ -197,7 +199,7 @@ var _ = Describe("ClusterOrder Integration Tests", func() {
 			Expect(result.RequeueAfter).To(Equal(statusPollInterval))
 			Expect(k8sClient.Status().Update(ctx, instance)).To(Succeed())
 
-			job := provisioning.FindLatestJobByType(instance.Status.Jobs, osacv1alpha1.JobTypeDeprovision)
+			job := provisioning.FindLatestJobByType(instance.Status.ProvisioningJobs, osacv1alpha1.JobTypeDeprovision)
 			Expect(job).NotTo(BeNil())
 			Expect(job.BlockDeletionOnFailure).To(BeTrue())
 
@@ -253,16 +255,18 @@ var _ = Describe("ClusterOrder Integration Tests", func() {
 		It("should skip provisioning when latest job succeeded with matching ConfigVersion", func() {
 			instance := newTestClusterOrder("cluster-order-skip-match")
 			instance.Status.DesiredConfigVersion = "v1"
-			instance.Status.Jobs = []osacv1alpha1.JobStatus{
+			instance.Status.ProvisioningJobs = []osacv1alpha1.JobStatus{
 				{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStateSucceeded, ConfigVersion: "v1"},
 			}
 
 			provState := &provisioning.State{
-				Jobs:                 &instance.Status.Jobs,
+				Jobs:                 &instance.Status.ProvisioningJobs,
 				DesiredConfigVersion: instance.Status.DesiredConfigVersion,
 			}
 			action, job := provisioning.EvaluateAction(provState, func() bool {
-				return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, k8sClient, client.ObjectKeyFromObject(instance), &osacv1alpha1.ClusterOrder{})
+				return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, k8sClient, client.ObjectKeyFromObject(instance), &osacv1alpha1.ClusterOrder{}, func(obj client.Object) []osacv1alpha1.JobStatus {
+					return obj.(*osacv1alpha1.ClusterOrder).Status.ProvisioningJobs
+				})
 			})
 			Expect(action).To(Equal(provisioning.Skip))
 			Expect(job).NotTo(BeNil())
@@ -327,9 +331,9 @@ var _ = Describe("ClusterOrder Integration Tests", func() {
 
 			// Backdate the first failed job to 5 minutes ago to simulate backoff elapsed
 			instance = getClusterOrder(name)
-			latestJob := provisioning.FindLatestJobByType(instance.Status.Jobs, osacv1alpha1.JobTypeProvision)
+			latestJob := provisioning.FindLatestJobByType(instance.Status.ProvisioningJobs, osacv1alpha1.JobTypeProvision)
 			latestJob.Timestamp = metav1.NewTime(time.Now().UTC().Add(-5 * time.Minute))
-			provisioning.UpdateJob(instance.Status.Jobs, *latestJob)
+			provisioning.UpdateJob(instance.Status.ProvisioningJobs, *latestJob)
 			Expect(k8sClient.Status().Update(ctx, instance)).To(Succeed())
 
 			// Second failure: backoff elapsed → trigger → poll (fails)

@@ -123,8 +123,8 @@ func (p *AAPProvider) GetProvisionStatus(ctx context.Context, resource client.Ob
 
 // TriggerDeprovision attempts to start deprovisioning for a resource.
 // It checks whether a running provision job needs to be cancelled first.
-func (p *AAPProvider) TriggerDeprovision(ctx context.Context, resource client.Object) (*DeprovisionResult, error) {
-	ready, provisionStatus, err := p.isReadyForDeprovision(ctx, resource)
+func (p *AAPProvider) TriggerDeprovision(ctx context.Context, resource client.Object, provisionJobs []v1alpha1.JobStatus) (*DeprovisionResult, error) {
+	ready, provisionStatus, err := p.isReadyForDeprovision(ctx, resource, provisionJobs)
 	if err != nil {
 		return nil, err
 	}
@@ -154,13 +154,11 @@ func (p *AAPProvider) TriggerDeprovision(ctx context.Context, resource client.Ob
 // - ready: true if ready to deprovision, false if need to wait for provision job cancellation
 // - currentProvisionStatus: the actual provision job status from AAP (used to update CR status)
 // - error: any error encountered during the check
-func (p *AAPProvider) isReadyForDeprovision(ctx context.Context, resource client.Object) (bool, *ProvisionStatus, error) {
+func (p *AAPProvider) isReadyForDeprovision(ctx context.Context, resource client.Object, provisionJobs []v1alpha1.JobStatus) (bool, *ProvisionStatus, error) {
 	log := ctrllog.FromContext(ctx)
 
-	jobs := GetJobsFromResource(resource)
-
 	// Find latest provision job
-	latestProvisionJob := FindLatestJobByType(jobs, v1alpha1.JobTypeProvision)
+	latestProvisionJob := FindLatestJobByType(provisionJobs, v1alpha1.JobTypeProvision)
 
 	// No provision job - ready to proceed
 	if latestProvisionJob == nil {
@@ -251,6 +249,7 @@ func (p *AAPProvider) launchTemplate(ctx context.Context, templateName string, r
 	switch template.Type {
 	case aap.TemplateTypeJob:
 		resp, err := p.client.LaunchJobTemplate(ctx, aap.LaunchJobTemplateRequest{
+			TemplateID:   template.ID,
 			TemplateName: templateName,
 			ExtraVars:    extraVars,
 		})
@@ -260,6 +259,7 @@ func (p *AAPProvider) launchTemplate(ctx context.Context, templateName string, r
 		jobID = resp.JobID
 	case aap.TemplateTypeWorkflow:
 		resp, err := p.client.LaunchWorkflowTemplate(ctx, aap.LaunchWorkflowTemplateRequest{
+			TemplateID:   template.ID,
 			TemplateName: templateName,
 			ExtraVars:    extraVars,
 		})

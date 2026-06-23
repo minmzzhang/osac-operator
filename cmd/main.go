@@ -92,9 +92,11 @@ const (
 	envClusterAAPProvisionTemplate   = "OSAC_CLUSTER_AAP_PROVISION_TEMPLATE"
 	envClusterAAPDeprovisionTemplate = "OSAC_CLUSTER_AAP_DEPROVISION_TEMPLATE"
 
-	// Tenant-specific AAP template overrides (default: osac-create-org / osac-delete-org)
-	envTenantAAPProvisionTemplate   = "OSAC_TENANT_AAP_PROVISION_TEMPLATE"
-	envTenantAAPDeprovisionTemplate = "OSAC_TENANT_AAP_DEPROVISION_TEMPLATE"
+	// Storage controller AAP template overrides
+	envStorageBackendProvisionTemplate   = "OSAC_STORAGE_BACKEND_AAP_PROVISION_TEMPLATE"
+	envStorageBackendDeprovisionTemplate = "OSAC_STORAGE_BACKEND_AAP_DEPROVISION_TEMPLATE"
+	envClusterStorageProvisionTemplate   = "OSAC_STORAGE_CLUSTER_AAP_PROVISION_TEMPLATE"
+	envClusterStorageDeprovisionTemplate = "OSAC_STORAGE_CLUSTER_AAP_DEPROVISION_TEMPLATE"
 
 	// Job history configuration
 	envMaxJobHistory = "OSAC_MAX_JOB_HISTORY"
@@ -107,6 +109,7 @@ const (
 
 	// Controller enable flags (defaults when flag is not set)
 	envEnableTenantController            = "OSAC_ENABLE_TENANT_CONTROLLER"
+	envEnableStorageController           = "OSAC_ENABLE_STORAGE_CONTROLLER"
 	envEnableComputeInstanceController   = "OSAC_ENABLE_COMPUTE_INSTANCE_CONTROLLER"
 	envEnableClusterController           = "OSAC_ENABLE_CLUSTER_CONTROLLER"
 	envEnableNetworkingController        = "OSAC_ENABLE_NETWORKING_CONTROLLER"
@@ -118,6 +121,7 @@ const (
 // controllerFlags holds the enable flags for all controllers.
 type controllerFlags struct {
 	Tenant            bool
+	Storage           bool
 	ComputeInstance   bool
 	Cluster           bool
 	Networking        bool
@@ -131,6 +135,9 @@ func registerControllerFlags() *controllerFlags {
 	flag.BoolVar(&flags.Tenant, "enable-tenant-controller",
 		helpers.GetEnvWithDefault(envEnableTenantController, false),
 		"Enable the tenant controller.")
+	flag.BoolVar(&flags.Storage, "enable-storage-controller",
+		helpers.GetEnvWithDefault(envEnableStorageController, false),
+		"Enable the storage controller.")
 	flag.BoolVar(&flags.ComputeInstance, "enable-compute-instance-controller",
 		helpers.GetEnvWithDefault(envEnableComputeInstanceController, false),
 		"Enable the compute-instance controller.")
@@ -148,8 +155,9 @@ func registerControllerFlags() *controllerFlags {
 
 // enableAllIfNoneSet enables all controllers if none are explicitly enabled.
 func (f *controllerFlags) enableAllIfNoneSet() {
-	if !f.Tenant && !f.ComputeInstance && !f.Cluster && !f.Networking && !f.BareMetalInstance {
+	if !f.Tenant && !f.Storage && !f.ComputeInstance && !f.Cluster && !f.Networking && !f.BareMetalInstance {
 		f.Tenant = true
+		f.Storage = true
 		f.ComputeInstance = true
 		f.Cluster = true
 		f.Networking = true
@@ -360,43 +368,79 @@ func setupComputeInstanceControllers(
 	return nil
 }
 
-// setupTenantController registers the Tenant controller with AAP storage provisioning templates.
-func setupTenantController(mgr mcmanager.Manager, maxJobHistory int) error {
+// setupTenantController registers the Tenant controller (namespace + UDN only).
+func setupTenantController(mgr mcmanager.Manager) error {
 	targetCluster := targetClusterFromManager(mgr)
 	tenantNamespace := os.Getenv(envTenantNamespace)
-
-	var tenantProvider provisioning.ProvisioningProvider
-	var tenantPollInterval time.Duration
-
-	aapURL := os.Getenv(envAAPURL)
-	aapToken := os.Getenv(envAAPToken)
-	if aapURL != "" && aapToken != "" {
-		tenantProvisionTemplate := helpers.GetEnvWithDefault(envTenantAAPProvisionTemplate, "osac-create-org")
-		tenantDeprovisionTemplate := helpers.GetEnvWithDefault(envTenantAAPDeprovisionTemplate, "osac-delete-org")
-		aapInsecureSkipVerify := helpers.GetEnvWithDefault(envAAPInsecureSkipVerify, false)
-
-		var err error
-		tenantProvider, tenantPollInterval, err = createAAPProvider(
-			aapURL, aapToken, tenantProvisionTemplate, tenantDeprovisionTemplate,
-			"", aapInsecureSkipVerify,
-		)
-		if err != nil {
-			return fmt.Errorf("tenant provisioning provider: %w", err)
-		}
-		setupLog.Info("tenant storage provisioning configured",
-			"provisionTemplate", tenantProvisionTemplate,
-			"deprovisionTemplate", tenantDeprovisionTemplate)
-	}
 
 	if err := (controller.NewTenantReconciler(
 		mgr,
 		tenantNamespace,
 		targetCluster,
-		tenantProvider,
-		tenantPollInterval,
-		maxJobHistory,
 	)).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("tenant controller: %w", err)
+	}
+	return nil
+}
+
+// setupStorageController registers the OSAC Storage Controller with two AAP
+// provider instances (backend and cluster-storage).
+func setupStorageController(mgr mcmanager.Manager, maxJobHistory int) error {
+	targetCluster := targetClusterFromManager(mgr)
+	tenantNamespace := os.Getenv(envTenantNamespace)
+
+	var backendProvider provisioning.ProvisioningProvider
+	var clusterStorageProvider provisioning.ProvisioningProvider
+	var pollInterval time.Duration
+
+	aapURL := os.Getenv(envAAPURL)
+	aapToken := os.Getenv(envAAPToken)
+	if aapURL != "" && aapToken != "" {
+		aapInsecureSkipVerify := helpers.GetEnvWithDefault(envAAPInsecureSkipVerify, false)
+
+		backendProvisionTemplate := helpers.GetEnvWithDefault(
+			envStorageBackendProvisionTemplate, "osac-create-tenant-storage-backend")
+		backendDeprovisionTemplate := helpers.GetEnvWithDefault(
+			envStorageBackendDeprovisionTemplate, "osac-delete-tenant-storage-backend")
+		clusterStorageProvisionTemplate := helpers.GetEnvWithDefault(
+			envClusterStorageProvisionTemplate, "osac-create-tenant-cluster-storage")
+		clusterStorageDeprovisionTemplate := helpers.GetEnvWithDefault(
+			envClusterStorageDeprovisionTemplate, "osac-delete-tenant-cluster-storage")
+
+		var err error
+		backendProvider, pollInterval, err = createAAPProvider(
+			aapURL, aapToken, backendProvisionTemplate, backendDeprovisionTemplate,
+			"", aapInsecureSkipVerify,
+		)
+		if err != nil {
+			return fmt.Errorf("storage backend provider: %w", err)
+		}
+
+		clusterStorageProvider, _, err = createAAPProvider(
+			aapURL, aapToken, clusterStorageProvisionTemplate, clusterStorageDeprovisionTemplate,
+			"", aapInsecureSkipVerify,
+		)
+		if err != nil {
+			return fmt.Errorf("cluster storage provider: %w", err)
+		}
+
+		setupLog.Info("storage provisioning configured",
+			"backendProvision", backendProvisionTemplate,
+			"backendDeprovision", backendDeprovisionTemplate,
+			"clusterStorageProvision", clusterStorageProvisionTemplate,
+			"clusterStorageDeprovision", clusterStorageDeprovisionTemplate)
+	}
+
+	if err := (controller.NewStorageReconciler(
+		mgr,
+		tenantNamespace,
+		targetCluster,
+		backendProvider,
+		clusterStorageProvider,
+		pollInterval,
+		maxJobHistory,
+	)).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("storage controller: %w", err)
 	}
 	return nil
 }
@@ -783,8 +827,14 @@ func main() {
 		}
 	}
 	if ctrlFlags.Tenant {
-		if err := setupTenantController(mgr, maxJobHistory); err != nil {
+		if err := setupTenantController(mgr); err != nil {
 			setupLog.Error(err, "unable to setup tenant controller")
+			os.Exit(1)
+		}
+	}
+	if ctrlFlags.Storage {
+		if err := setupStorageController(mgr, maxJobHistory); err != nil {
+			setupLog.Error(err, "unable to setup storage controller")
 			os.Exit(1)
 		}
 	}

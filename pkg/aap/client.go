@@ -74,6 +74,7 @@ func NewClient(baseURL, token string, insecureSkipVerify bool) *Client {
 
 // LaunchJobTemplateRequest contains parameters for launching a job template.
 type LaunchJobTemplateRequest struct {
+	TemplateID   int
 	TemplateName string
 	ExtraVars    map[string]any
 }
@@ -85,6 +86,7 @@ type LaunchJobTemplateResponse struct {
 
 // LaunchWorkflowTemplateRequest contains parameters for launching a workflow template.
 type LaunchWorkflowTemplateRequest struct {
+	TemplateID   int
 	TemplateName string
 	ExtraVars    map[string]any
 }
@@ -121,7 +123,11 @@ type Template struct {
 
 // LaunchJobTemplate launches a job template and returns the job ID.
 func (c *Client) LaunchJobTemplate(ctx context.Context, req LaunchJobTemplateRequest) (*LaunchJobTemplateResponse, error) {
-	url := fmt.Sprintf("%s/%s/%s/%s/launch/", c.baseURL, APIVersion, JobTemplatesEndpoint, req.TemplateName)
+	identifier := req.TemplateName
+	if req.TemplateID > 0 {
+		identifier = fmt.Sprintf("%d", req.TemplateID)
+	}
+	url := fmt.Sprintf("%s/%s/%s/%s/launch/", c.baseURL, APIVersion, JobTemplatesEndpoint, identifier)
 
 	payload := map[string]any{
 		"extra_vars": req.ExtraVars,
@@ -142,7 +148,11 @@ func (c *Client) LaunchJobTemplate(ctx context.Context, req LaunchJobTemplateReq
 
 // LaunchWorkflowTemplate launches a workflow template and returns the job ID.
 func (c *Client) LaunchWorkflowTemplate(ctx context.Context, req LaunchWorkflowTemplateRequest) (*LaunchWorkflowTemplateResponse, error) {
-	url := fmt.Sprintf("%s/%s/%s/%s/launch/", c.baseURL, APIVersion, WorkflowJobTemplatesEndpoint, req.TemplateName)
+	identifier := req.TemplateName
+	if req.TemplateID > 0 {
+		identifier = fmt.Sprintf("%d", req.TemplateID)
+	}
+	url := fmt.Sprintf("%s/%s/%s/%s/launch/", c.baseURL, APIVersion, WorkflowJobTemplatesEndpoint, identifier)
 
 	payload := map[string]any{
 		"extra_vars": req.ExtraVars,

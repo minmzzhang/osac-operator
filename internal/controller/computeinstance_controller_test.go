@@ -111,7 +111,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 						Name:      resourceName,
 						Namespace: namespaceName,
 						Annotations: map[string]string{
-							osacTenantAnnotation: tenantName,
+							osacTenantKey: tenantName,
 						},
 					},
 					Spec: newTestComputeInstanceSpec("test_template"),
@@ -195,7 +195,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Namespace: namespaceName,
 					Annotations: map[string]string{
 						osacComputeInstanceManagementStateAnnotation: ManagementStateUnmanaged,
-						osacTenantAnnotation:                         tenantName,
+						osacTenantKey: tenantName,
 					},
 					Finalizers: []string{osacComputeInstanceFinalizer},
 				},
@@ -207,7 +207,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 
 			mockProv := &mockProvisioningProvider{
 				name: "aap",
-				triggerDeprovisionFunc: func(ctx context.Context, resource client.Object) (*provisioning.DeprovisionResult, error) {
+				triggerDeprovisionFunc: func(ctx context.Context, resource client.Object, _ []osacv1alpha1.JobStatus) (*provisioning.DeprovisionResult, error) {
 					return &provisioning.DeprovisionResult{
 						Action: provisioning.DeprovisionSkipped,
 					}, nil
@@ -749,11 +749,13 @@ var _ = Describe("ComputeInstance Controller", func() {
 		Describe("EvaluateAction (formerly shouldTriggerProvision)", func() {
 			evaluateAction := func(instance *osacv1alpha1.ComputeInstance) (provisioning.Action, *osacv1alpha1.JobStatus) {
 				provState := &provisioning.State{
-					Jobs:                 &instance.Status.Jobs,
+					Jobs:                 &instance.Status.ProvisioningJobs,
 					DesiredConfigVersion: instance.Status.DesiredConfigVersion,
 				}
 				return provisioning.EvaluateAction(provState, func() bool {
-					return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, k8sClient, client.ObjectKeyFromObject(instance), &osacv1alpha1.ComputeInstance{})
+					return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, k8sClient, client.ObjectKeyFromObject(instance), &osacv1alpha1.ComputeInstance{}, func(obj client.Object) []osacv1alpha1.JobStatus {
+						return obj.(*osacv1alpha1.ComputeInstance).Status.ProvisioningJobs
+					})
 				})
 			}
 
@@ -772,7 +774,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 				instance := &osacv1alpha1.ComputeInstance{
 					Status: osacv1alpha1.ComputeInstanceStatus{
 						DesiredConfigVersion: "abc123",
-						Jobs:                 []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: ""}},
+						ProvisioningJobs:     []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: ""}},
 					},
 				}
 				action, _ := evaluateAction(instance)
@@ -782,7 +784,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			It("should poll when job is still running", func() {
 				instance := &osacv1alpha1.ComputeInstance{
 					Status: osacv1alpha1.ComputeInstanceStatus{
-						Jobs: []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStateRunning}},
+						ProvisioningJobs: []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStateRunning}},
 					},
 				}
 				action, job := evaluateAction(instance)
@@ -794,7 +796,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			It("should poll when job is pending", func() {
 				instance := &osacv1alpha1.ComputeInstance{
 					Status: osacv1alpha1.ComputeInstanceStatus{
-						Jobs: []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStatePending}},
+						ProvisioningJobs: []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStatePending}},
 					},
 				}
 				action, job := evaluateAction(instance)
@@ -806,7 +808,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 				instance := &osacv1alpha1.ComputeInstance{
 					Status: osacv1alpha1.ComputeInstanceStatus{
 						DesiredConfigVersion: "abc123",
-						Jobs:                 []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStateSucceeded, ConfigVersion: "abc123"}},
+						ProvisioningJobs:     []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStateSucceeded, ConfigVersion: "abc123"}},
 					},
 				}
 				action, job := evaluateAction(instance)
@@ -818,7 +820,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 				instance := &osacv1alpha1.ComputeInstance{
 					Status: osacv1alpha1.ComputeInstanceStatus{
 						DesiredConfigVersion: "new-version",
-						Jobs:                 []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStateSucceeded, ConfigVersion: "old-version"}},
+						ProvisioningJobs:     []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStateSucceeded, ConfigVersion: "old-version"}},
 					},
 				}
 				action, job := evaluateAction(instance)
@@ -830,7 +832,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 				instance := &osacv1alpha1.ComputeInstance{
 					Status: osacv1alpha1.ComputeInstanceStatus{
 						DesiredConfigVersion: "new-version",
-						Jobs:                 []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStateFailed, ConfigVersion: "old-version"}},
+						ProvisioningJobs:     []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStateFailed, ConfigVersion: "old-version"}},
 					},
 				}
 				action, job := evaluateAction(instance)
@@ -842,7 +844,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 				instance := &osacv1alpha1.ComputeInstance{
 					Status: osacv1alpha1.ComputeInstanceStatus{
 						DesiredConfigVersion: "abc123",
-						Jobs:                 []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStateFailed, ConfigVersion: "abc123"}},
+						ProvisioningJobs:     []osacv1alpha1.JobStatus{{Type: osacv1alpha1.JobTypeProvision, JobID: "job-1", State: osacv1alpha1.JobStateFailed, ConfigVersion: "abc123"}},
 					},
 				}
 				action, job := evaluateAction(instance)
@@ -856,7 +858,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Spec:       newTestComputeInstanceSpec("test_template"),
 					Status: osacv1alpha1.ComputeInstanceStatus{
 						DesiredConfigVersion: "abc123",
-						Jobs: []osacv1alpha1.JobStatus{{
+						ProvisioningJobs: []osacv1alpha1.JobStatus{{
 							Type:          osacv1alpha1.JobTypeProvision,
 							JobID:         "job-1",
 							State:         osacv1alpha1.JobStateFailed,
@@ -885,7 +887,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 
 				jobTimestamp := metav1.NewTime(time.Now().UTC())
 				apiInstance.Status.DesiredConfigVersion = "v1"
-				apiInstance.Status.Jobs = []osacv1alpha1.JobStatus{
+				apiInstance.Status.ProvisioningJobs = []osacv1alpha1.JobStatus{
 					{Type: osacv1alpha1.JobTypeProvision, JobID: "running-job", State: osacv1alpha1.JobStateRunning, Timestamp: jobTimestamp},
 				}
 				Expect(k8sClient.Status().Update(ctx, apiInstance)).To(Succeed())
@@ -922,7 +924,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 				oldJobTimestamp := metav1.NewTime(time.Now().UTC().Add(-time.Minute))
 				newJobTimestamp := metav1.NewTime(time.Now().UTC())
 				apiInstance.Status.DesiredConfigVersion = "v2"
-				apiInstance.Status.Jobs = []osacv1alpha1.JobStatus{
+				apiInstance.Status.ProvisioningJobs = []osacv1alpha1.JobStatus{
 					{Type: osacv1alpha1.JobTypeProvision, JobID: "old-job", State: osacv1alpha1.JobStateSucceeded, ConfigVersion: "v1", Timestamp: oldJobTimestamp},
 					{Type: osacv1alpha1.JobTypeProvision, JobID: "new-running-job", State: osacv1alpha1.JobStateRunning, Timestamp: newJobTimestamp},
 				}
@@ -935,7 +937,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					},
 					Status: osacv1alpha1.ComputeInstanceStatus{
 						DesiredConfigVersion: "v2",
-						Jobs: []osacv1alpha1.JobStatus{
+						ProvisioningJobs: []osacv1alpha1.JobStatus{
 							{Type: osacv1alpha1.JobTypeProvision, JobID: "old-job", State: osacv1alpha1.JobStateSucceeded, ConfigVersion: "v1"},
 						},
 					},
@@ -962,7 +964,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 
 				jobTimestamp := metav1.NewTime(time.Now().UTC())
 				apiInstance.Status.DesiredConfigVersion = "v2"
-				apiInstance.Status.Jobs = []osacv1alpha1.JobStatus{
+				apiInstance.Status.ProvisioningJobs = []osacv1alpha1.JobStatus{
 					{Type: osacv1alpha1.JobTypeProvision, JobID: "done-job", State: osacv1alpha1.JobStateSucceeded, ConfigVersion: "v1", Timestamp: jobTimestamp},
 				}
 				Expect(k8sClient.Status().Update(ctx, apiInstance)).To(Succeed())
@@ -974,7 +976,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					},
 					Status: osacv1alpha1.ComputeInstanceStatus{
 						DesiredConfigVersion: "v2",
-						Jobs: []osacv1alpha1.JobStatus{
+						ProvisioningJobs: []osacv1alpha1.JobStatus{
 							{Type: osacv1alpha1.JobTypeProvision, JobID: "done-job", State: osacv1alpha1.JobStateSucceeded, ConfigVersion: "v1"},
 						},
 					},
@@ -1016,7 +1018,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),
@@ -1057,7 +1059,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),
@@ -1108,7 +1110,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),
@@ -1522,7 +1524,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),
@@ -1581,7 +1583,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),
@@ -1699,7 +1701,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),
@@ -1767,7 +1769,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),
@@ -1807,7 +1809,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			DeferCleanup(func() { deleteCI(resourceName) })
 			DeferCleanup(func() { deleteTenantInNamespace(ctx, namespaceName, tenantName) })
 
-			// Create tenant in Progressing state (no StorageClassReady condition)
+			// Create tenant in Progressing state (no ClusterStorageReady condition)
 			tenant := &osacv1alpha1.Tenant{
 				ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: namespaceName},
 			}
@@ -1821,7 +1823,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),
@@ -1848,20 +1850,20 @@ var _ = Describe("ComputeInstance Controller", func() {
 			}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
 		})
 
-		It("should include StorageClassReady condition in Provisioned message", func() {
+		It("should include ClusterStorageReady condition in Provisioned message", func() {
 			const resourceName = "test-ci-tenant-sc-msg"
 			const tenantName = "tenant-sc-msg"
 			DeferCleanup(func() { deleteCI(resourceName) })
 			DeferCleanup(func() { deleteTenantInNamespace(ctx, namespaceName, tenantName) })
 
-			// Create tenant in Progressing state with a StorageClassReady condition
+			// Create tenant in Progressing state with a ClusterStorageReady condition
 			tenant := &osacv1alpha1.Tenant{
 				ObjectMeta: metav1.ObjectMeta{Name: tenantName, Namespace: namespaceName},
 			}
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 			tenant.Status.Phase = osacv1alpha1.TenantPhaseProgressing
 			tenant.SetStatusCondition(
-				osacv1alpha1.TenantConditionStorageClassReady,
+				osacv1alpha1.TenantConditionClusterStorageReady,
 				metav1.ConditionFalse,
 				osacv1alpha1.TenantReasonMultipleFound,
 				"Multiple StorageClasses found with label osac.openshift.io/tenant="+tenantName+": sc1, sc2",
@@ -1874,7 +1876,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),
@@ -1897,7 +1899,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 				g.Expect(cond.Reason).To(Equal("TenantNotReady"))
-				g.Expect(cond.Message).To(ContainSubstring("StorageClassReady"))
+				g.Expect(cond.Message).To(ContainSubstring("ClusterStorageReady"))
 				g.Expect(cond.Message).To(ContainSubstring("sc1, sc2"))
 			}, 5*time.Second, 100*time.Millisecond).Should(Succeed())
 		})
@@ -1915,7 +1917,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 			Expect(k8sClient.Create(ctx, tenant)).To(Succeed())
 			tenant.Status.Phase = osacv1alpha1.TenantPhaseProgressing
 			tenant.SetStatusCondition(
-				osacv1alpha1.TenantConditionStorageClassReady,
+				osacv1alpha1.TenantConditionClusterStorageReady,
 				metav1.ConditionFalse,
 				osacv1alpha1.TenantReasonMultipleFound,
 				"Multiple StorageClasses found",
@@ -1928,7 +1930,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),
@@ -2114,7 +2116,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: spec,
@@ -2155,7 +2157,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: spec,
@@ -2213,7 +2215,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: spec,
@@ -2274,7 +2276,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation:                tenantName,
+						osacTenantKey:                       tenantName,
 						osacSubnetTargetNamespaceAnnotation: subnetRef, // already correct
 					},
 				},
@@ -2323,7 +2325,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),
@@ -2634,7 +2636,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 					Name:      resourceName,
 					Namespace: namespaceName,
 					Annotations: map[string]string{
-						osacTenantAnnotation: tenantName,
+						osacTenantKey: tenantName,
 					},
 				},
 				Spec: spec,
@@ -2893,7 +2895,7 @@ var _ = Describe("ComputeInstance Controller", func() {
 						osacComputeInstanceIDLabel: mapCIUUID,
 					},
 					Annotations: map[string]string{
-						osacTenantAnnotation: "dummy",
+						osacTenantKey: "dummy",
 					},
 				},
 				Spec: newTestComputeInstanceSpec("test_template"),

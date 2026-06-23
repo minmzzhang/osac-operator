@@ -525,7 +525,7 @@ func (r *ClusterOrderReconciler) handleDelete(ctx context.Context, _ reconcile.R
 
 func (r *ClusterOrderReconciler) provisionState(instance *v1alpha1.ClusterOrder) *provisioning.State {
 	return &provisioning.State{
-		Jobs:                 &instance.Status.Jobs,
+		Jobs:                 &instance.Status.ProvisioningJobs,
 		DesiredConfigVersion: instance.Status.DesiredConfigVersion,
 	}
 }
@@ -548,7 +548,9 @@ func (r *ClusterOrderReconciler) handleProvisioning(ctx context.Context, instanc
 			},
 		},
 		func() bool {
-			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.apiReader, client.ObjectKeyFromObject(instance), &v1alpha1.ClusterOrder{})
+			return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.apiReader, client.ObjectKeyFromObject(instance), &v1alpha1.ClusterOrder{}, func(obj client.Object) []v1alpha1.JobStatus {
+				return obj.(*v1alpha1.ClusterOrder).Status.ProvisioningJobs
+			})
 		},
 		func() error { return r.Status().Update(ctx, instance) },
 	)
@@ -576,7 +578,7 @@ func (r *ClusterOrderReconciler) handleDeprovisioning(ctx context.Context, insta
 		return ctrl.Result{}, nil
 	}
 	result, done, err := provisioning.RunDeprovisioningLifecycle(ctx, r.ProvisioningProvider, instance,
-		&instance.Status.Jobs, r.MaxJobHistory, r.StatusPollInterval)
+		&instance.Status.ProvisioningJobs, r.MaxJobHistory, r.StatusPollInterval)
 	if err != nil || !done {
 		return result, err
 	}
