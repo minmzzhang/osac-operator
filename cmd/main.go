@@ -597,6 +597,71 @@ func setupNetworkingControllers(
 		}
 	}
 
+	// Create a dedicated provider for ExternalIP attach/detach operations.
+	externalIPAttachmentProvider, err := provisioning.NewProvider(provisioning.ProviderConfig{
+		AAPClient:           aapClient,
+		ProvisionTemplate:   fmt.Sprintf("%s-attach-external-ip", templatePrefix),
+		DeprovisionTemplate: fmt.Sprintf("%s-detach-external-ip", templatePrefix),
+	})
+	if err != nil {
+		return fmt.Errorf("externalip attachment provider: %w", err)
+	}
+
+	// Setup ExternalIPPool controller and feedback
+	if grpcConn != nil {
+		if err := controller.NewExternalIPPoolFeedbackReconciler(
+			localMgr.GetClient(),
+			grpcConn,
+			networkingNamespace,
+		).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("externalippool feedback controller: %w", err)
+		}
+	}
+
+	if err := controller.NewExternalIPPoolReconciler(mgr, networkingNamespace, networkingProvider, statusPollInterval,
+		maxJobHistory, targetCluster,
+	).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("externalippool controller: %w", err)
+	}
+
+	// Setup ExternalIP controller
+	if err := controller.NewExternalIPReconciler(
+		mgr, networkingNamespace,
+		networkingProvider, statusPollInterval, maxJobHistory, targetCluster,
+	).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("externalip controller: %w", err)
+	}
+
+	// Setup ExternalIPAttachment controller
+	if err := controller.NewExternalIPAttachmentReconciler(
+		mgr, networkingNamespace, computeInstanceNamespace,
+		externalIPAttachmentProvider, statusPollInterval, maxJobHistory, targetCluster,
+	).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("externalipattachment controller: %w", err)
+	}
+
+	// Setup ExternalIP feedback controller
+	if grpcConn != nil {
+		if err := controller.NewExternalIPFeedbackReconciler(
+			localMgr.GetClient(),
+			grpcConn,
+			networkingNamespace,
+		).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("externalip feedback controller: %w", err)
+		}
+	}
+
+	// Setup ExternalIPAttachment feedback controller
+	if grpcConn != nil {
+		if err := controller.NewExternalIPAttachmentFeedbackReconciler(
+			localMgr.GetClient(),
+			grpcConn,
+			networkingNamespace,
+		).SetupWithManager(mgr); err != nil {
+			return fmt.Errorf("externalipattachment feedback controller: %w", err)
+		}
+	}
+
 	return nil
 }
 

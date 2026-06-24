@@ -76,6 +76,9 @@ rules:
   - baremetalinstances/finalizers
   - clusterorders/finalizers
   - computeinstances/finalizers
+  - externalipattachments/finalizers
+  - externalippools/finalizers
+  - externalips/finalizers
   - publicipattachments/finalizers
   - publicippools/finalizers
   - publicips/finalizers
@@ -90,6 +93,9 @@ rules:
   resources:
   - clusterorders
   - computeinstances
+  - externalipattachments
+  - externalippools
+  - externalips
   - publicipattachments
   - publicippools
   - publicips
@@ -110,6 +116,9 @@ rules:
   resources:
   - clusterorders/status
   - computeinstances/status
+  - externalipattachments/status
+  - externalippools/status
+  - externalips/status
   - publicipattachments/status
   - publicippools/status
   - publicips/status
