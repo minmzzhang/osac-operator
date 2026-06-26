@@ -120,6 +120,11 @@ const (
 
 	// ClusterOrderConditionAvailable means the cluster is available
 	ClusterOrderConditionAvailable ClusterOrderConditionType = "Available"
+
+	// ClusterOrderConditionClusterStorageReady indicates whether StorageClasses
+	// and CSI drivers are installed on the CaaS cluster for this tenant.
+	// Owned by the OSAC Storage Controller. Does not gate Phase=Ready.
+	ClusterOrderConditionClusterStorageReady ClusterOrderConditionType = "ClusterStorageReady"
 )
 
 // ClusterOrderClusterReferenceType contains a reference to the namespace created by this ClusterOrder
@@ -171,6 +176,7 @@ type ClusterOrderStatus struct {
 // +kubebuilder:resource:shortName=cord
 // +kubebuilder:printcolumn:name="Template",type=string,JSONPath=`.spec.templateID`
 // +kubebuilder:printcolumn:name="Phase",type=string,JSONPath=`.status.phase`
+// +kubebuilder:printcolumn:name="Cluster Storage",type=string,JSONPath=`.status.conditions[?(@.type=="ClusterStorageReady")].status`,priority=1
 
 // ClusterOrder is the Schema for the clusterorders API
 type ClusterOrder struct {
