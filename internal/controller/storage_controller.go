@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -47,8 +48,9 @@ import (
 )
 
 const (
-	storageFinalizer      = "osac.openshift.io/storage"
-	storageControllerName = "storage-controller"
+	storageFinalizer        = "osac.openshift.io/storage"
+	clusterStorageFinalizer = "osac.openshift.io/cluster-storage"
+	storageControllerName   = "storage-controller"
 )
 
 // StorageReconciler reconciles storage lifecycle on Tenant CRs.
@@ -247,7 +249,193 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 			latestClassJob, r.StatusPollInterval, nil)
 	}
 
+	// Stage 3: provision cluster-side storage on CaaS clusters owned by this tenant.
+	// Runs after VMaaS (Stage 2) because CaaS requires StorageBackendReady (Stage 1)
+	// to have completed during tenant onboarding before cluster-side resources can
+	// be installed.
+	if r.ClusterStorageProvider != nil {
+		caasResult, caasErr := r.handleCaaSUpdate(ctx, instance)
+		if caasErr != nil || caasResult.RequeueAfter > 0 {
+			return caasResult, caasErr
+		}
+	}
+
 	return ctrl.Result{}, nil
+}
+
+// handleCaaSUpdate provisions cluster-side storage on CaaS clusters belonging
+// to this tenant. For each Ready ClusterOrder without ClusterStorageReady=True,
+// it retrieves the kubeconfig and triggers the AAP provisioning job.
+func (r *StorageReconciler) handleCaaSUpdate(ctx context.Context, instance *v1alpha1.Tenant) (ctrl.Result, error) {
+	log := ctrllog.FromContext(ctx)
+	tenantName := instance.GetName()
+
+	clusterOrders := &v1alpha1.ClusterOrderList{}
+	if err := r.List(ctx, clusterOrders); err != nil {
+		return ctrl.Result{}, fmt.Errorf("list ClusterOrders: %w", err)
+	}
+
+	for i := range clusterOrders.Items {
+		co := &clusterOrders.Items[i]
+
+		annotation, exists := co.GetAnnotations()[osacTenantKey]
+		if !exists || annotation != tenantName {
+			continue
+		}
+
+		if co.Status.Phase != v1alpha1.ClusterOrderPhaseReady {
+			continue
+		}
+
+		if co.IsStatusConditionTrue(string(v1alpha1.ClusterOrderConditionClusterStorageReady)) {
+			continue
+		}
+
+		// ClusterOrders being deleted are handled by handleCaaSDelete
+		if !co.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		log.Info("processing CaaS cluster storage", "clusterOrder", co.Name, "tenant", tenantName)
+
+		if controllerutil.AddFinalizer(co, clusterStorageFinalizer) {
+			if err := r.Update(ctx, co); err != nil {
+				return ctrl.Result{}, fmt.Errorf("add storage finalizer to ClusterOrder %s: %w", co.Name, err)
+			}
+		}
+
+		kubeconfig, err := r.getClusterKubeconfig(ctx, co)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("get kubeconfig for ClusterOrder %s: %w", co.Name, err)
+		}
+
+		// Continue to the next ClusterOrder rather than returning so that
+		// other clusters for this tenant can still be provisioned. The
+		// HostedControlPlane may not be ready yet for this cluster.
+		if kubeconfig == nil {
+			co.SetStatusCondition(
+				string(v1alpha1.ClusterOrderConditionClusterStorageReady),
+				metav1.ConditionFalse,
+				"Kubeconfig not yet available for CaaS cluster",
+				"KubeConfigNotAvailable")
+			if err := r.Status().Update(ctx, co); err != nil {
+				return ctrl.Result{}, fmt.Errorf("update ClusterOrder %s status: %w", co.Name, err)
+			}
+			continue
+		}
+
+		provCtx := provisioning.WithAdminKubeconfig(ctx, string(kubeconfig))
+
+		provResult, provErr := provisioning.RunProvisioningLifecycle(provCtx, r.ClusterStorageProvider, co,
+			&provisioning.State{Jobs: &co.Status.ClusterStorageJobs},
+			r.MaxJobHistory, r.StatusPollInterval, nil,
+			func() bool {
+				return provisioning.CheckAPIServerForNonTerminalProvisionJob(ctx, r.Client,
+					client.ObjectKeyFromObject(co), &v1alpha1.ClusterOrder{},
+					func(obj client.Object) []v1alpha1.JobStatus {
+						return obj.(*v1alpha1.ClusterOrder).Status.ClusterStorageJobs
+					})
+			},
+			func() error { return r.Status().Update(ctx, co) },
+		)
+		if provErr != nil {
+			co.SetStatusCondition(
+				string(v1alpha1.ClusterOrderConditionClusterStorageReady),
+				metav1.ConditionFalse,
+				fmt.Sprintf("Provisioning failed: %v", provErr),
+				"ProvisionFailed")
+			if updateErr := r.Status().Update(ctx, co); updateErr != nil {
+				log.Error(updateErr, "failed to update ClusterOrder status after provision error", "clusterOrder", co.Name)
+			}
+			return provResult, provErr
+		}
+
+		if provResult.RequeueAfter > 0 {
+			if err := r.Status().Update(ctx, co); err != nil {
+				return ctrl.Result{}, fmt.Errorf("update ClusterOrder %s status: %w", co.Name, err)
+			}
+			return provResult, nil
+		}
+
+		// Provisioning complete: discover StorageClasses on the CaaS cluster
+		caasClient, err := r.buildClientFromKubeconfig(kubeconfig)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("build CaaS client for ClusterOrder %s: %w", co.Name, err)
+		}
+
+		scResult, err := getTenantStorageClasses(ctx, caasClient, tenantName)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("get StorageClasses on CaaS cluster %s: %w", co.Name, err)
+		}
+
+		for _, msg := range scResult.duplicateMessages {
+			r.Recorder.Eventf(co, nil, corev1.EventTypeWarning, eventReasonDuplicateStorageClass, eventActionDetectDuplicate, "%s", msg)
+		}
+
+		if len(scResult.resolved) > 0 {
+			co.SetStatusCondition(
+				string(v1alpha1.ClusterOrderConditionClusterStorageReady),
+				metav1.ConditionTrue,
+				scResult.conditionMessage(),
+				v1alpha1.TenantReasonFound)
+			r.Recorder.Eventf(co, nil, corev1.EventTypeNormal, "ClusterStorageProvisioned", "Provision",
+				"Storage provisioned on CaaS cluster %s", co.Name)
+		} else {
+			reason := v1alpha1.TenantReasonNotFound
+			if len(scResult.duplicateMessages) > 0 {
+				reason = v1alpha1.TenantReasonMultipleFound
+			}
+			co.SetStatusCondition(
+				string(v1alpha1.ClusterOrderConditionClusterStorageReady),
+				metav1.ConditionFalse,
+				scResult.conditionMessage(),
+				reason)
+		}
+
+		if err := r.Status().Update(ctx, co); err != nil {
+			return ctrl.Result{}, fmt.Errorf("update ClusterOrder %s status: %w", co.Name, err)
+		}
+
+		r.updateTenantClusterStorage(instance, co)
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *StorageReconciler) buildClientFromKubeconfig(kubeconfig []byte) (client.Client, error) {
+	restConfig, err := clientcmd.RESTConfigFromKubeConfig(kubeconfig)
+	if err != nil {
+		return nil, fmt.Errorf("parse kubeconfig: %w", err)
+	}
+	c, err := client.New(restConfig, client.Options{Scheme: r.Scheme})
+	if err != nil {
+		return nil, fmt.Errorf("create client: %w", err)
+	}
+	return c, nil
+}
+
+// updateTenantClusterStorage adds or updates the CaaS cluster entry in
+// Tenant.status.clusterStorage without overwriting existing entries.
+func (r *StorageReconciler) updateTenantClusterStorage(tenant *v1alpha1.Tenant, co *v1alpha1.ClusterOrder) {
+	clusterName := co.Name
+	ready := co.IsStatusConditionTrue(string(v1alpha1.ClusterOrderConditionClusterStorageReady))
+	reason := v1alpha1.TenantReasonNotFound
+	if ready {
+		reason = v1alpha1.TenantReasonFound
+	}
+
+	for i, cs := range tenant.Status.ClusterStorage {
+		if cs.ClusterName == clusterName {
+			tenant.Status.ClusterStorage[i].Ready = ready
+			tenant.Status.ClusterStorage[i].Reason = reason
+			return
+		}
+	}
+	tenant.Status.ClusterStorage = append(tenant.Status.ClusterStorage, v1alpha1.ClusterStorageStatus{
+		ClusterName: clusterName,
+		Ready:       ready,
+		Reason:      reason,
+	})
 }
 
 func (r *StorageReconciler) handleDelete(ctx context.Context, instance *v1alpha1.Tenant) (ctrl.Result, error) {
