@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
 	"github.com/osac-project/osac-operator/api/v1alpha1"
 	"github.com/osac-project/osac-operator/pkg/provisioning"
 	corev1 "k8s.io/api/core/v1"
@@ -95,6 +96,17 @@ func createLabeledStorageClass(ctx context.Context, name, tenant, tier string) {
 	DeferCleanup(func() {
 		Expect(client.IgnoreNotFound(k8sClient.Delete(ctx, sc))).To(Succeed())
 	})
+}
+
+func newClusterOrder(name, namespace string, annotations map[string]string) *v1alpha1.ClusterOrder {
+	return &v1alpha1.ClusterOrder{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        name,
+			Namespace:   namespace,
+			Annotations: annotations,
+		},
+		Spec: v1alpha1.ClusterOrderSpec{TemplateID: "test_template"},
+	}
 }
 
 var _ = Describe("Storage Controller", func() {
@@ -666,6 +678,315 @@ var _ = Describe("Storage Controller", func() {
 			Expect(cond.Status).To(Equal(metav1.ConditionFalse))
 			Expect(cond.Reason).To(Equal(v1alpha1.TenantReasonMultipleFound))
 			Expect(tenant.Status.StorageClasses).To(BeEmpty())
+		})
+	})
+
+	Context("CaaS: mapClusterOrderToTenant", func() {
+		It("should return reconcile request for the owning Tenant", func() {
+			tenantName := "caas-map-valid"
+			createReadyTenantForStorage(ctx, tenantName, testNamespace)
+
+			co := newClusterOrder("caas-map-co-1", testNamespace, map[string]string{
+						osacTenantKey: tenantName,
+					})
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, co) })
+
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, nil, pollInterval, provisioning.DefaultMaxJobHistory,
+			)
+
+			requests := r.mapClusterOrderToTenant(ctx, co)
+			Expect(requests).To(HaveLen(1))
+			Expect(requests[0].Name).To(Equal(tenantName))
+			Expect(requests[0].Namespace).To(Equal(testNamespace))
+		})
+
+		It("should return nil when tenant annotation is missing", func() {
+			co := newClusterOrder("caas-map-no-annotation", testNamespace, nil)
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, co) })
+
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, nil, pollInterval, provisioning.DefaultMaxJobHistory,
+			)
+
+			requests := r.mapClusterOrderToTenant(ctx, co)
+			Expect(requests).To(BeNil())
+		})
+
+		It("should return nil when tenant annotation is empty", func() {
+			co := newClusterOrder("caas-map-empty-annotation", testNamespace, map[string]string{
+						osacTenantKey: "",
+					})
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, co) })
+
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, nil, pollInterval, provisioning.DefaultMaxJobHistory,
+			)
+
+			requests := r.mapClusterOrderToTenant(ctx, co)
+			Expect(requests).To(BeNil())
+		})
+
+		It("should return nil when referenced Tenant does not exist", func() {
+			co := newClusterOrder("caas-map-no-tenant", testNamespace, map[string]string{
+						osacTenantKey: "nonexistent-tenant",
+					})
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, co) })
+
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, nil, pollInterval, provisioning.DefaultMaxJobHistory,
+			)
+
+			requests := r.mapClusterOrderToTenant(ctx, co)
+			Expect(requests).To(BeNil())
+		})
+	})
+
+	Context("CaaS: getClusterKubeconfig", func() {
+		const hcpNamespace = "clusters-caas-test"
+
+		BeforeEach(func() {
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: hcpNamespace}}
+			if err := k8sClient.Create(ctx, ns); err != nil {
+				Expect(client.IgnoreAlreadyExists(err)).To(Succeed())
+			}
+		})
+
+		It("should return kubeconfig from HostedControlPlane Secret reference", func() {
+			kubeconfigData := []byte("apiVersion: v1\nclusters: []\n")
+
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "admin-kubeconfig",
+					Namespace: hcpNamespace,
+				},
+				Data: map[string][]byte{
+					"kubeconfig": kubeconfigData,
+				},
+			}
+			Expect(k8sClient.Create(ctx, secret)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, secret) })
+
+			hcp := &hypershiftv1beta1.HostedControlPlane{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-hcp",
+					Namespace: hcpNamespace,
+				},
+			}
+			Expect(k8sClient.Create(ctx, hcp)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, hcp) })
+
+			hcp.Status.KubeConfig = &hypershiftv1beta1.KubeconfigSecretRef{
+				Name: "admin-kubeconfig",
+				Key:  "kubeconfig",
+			}
+			Expect(k8sClient.Status().Update(ctx, hcp)).To(Succeed())
+
+			co := newClusterOrder("caas-kc-valid", testNamespace, nil)
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, co) })
+			co.Status.ClusterReference = &v1alpha1.ClusterOrderClusterReferenceType{
+				Namespace:         hcpNamespace,
+				HostedClusterName: "test-hcp",
+			}
+			Expect(k8sClient.Status().Update(ctx, co)).To(Succeed())
+
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, nil, pollInterval, provisioning.DefaultMaxJobHistory,
+			)
+
+			result, err := r.getClusterKubeconfig(ctx, co)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(Equal(kubeconfigData))
+		})
+
+		It("should return nil when ClusterReference is nil", func() {
+			co := newClusterOrder("caas-kc-no-ref", testNamespace, nil)
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, co) })
+
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, nil, pollInterval, provisioning.DefaultMaxJobHistory,
+			)
+
+			result, err := r.getClusterKubeconfig(ctx, co)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeNil())
+		})
+
+		It("should return nil when HostedControlPlane does not exist", func() {
+			co := newClusterOrder("caas-kc-no-hcp", testNamespace, nil)
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, co) })
+			co.Status.ClusterReference = &v1alpha1.ClusterOrderClusterReferenceType{
+				Namespace:         hcpNamespace,
+				HostedClusterName: "nonexistent-hcp",
+			}
+			Expect(k8sClient.Status().Update(ctx, co)).To(Succeed())
+
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, nil, pollInterval, provisioning.DefaultMaxJobHistory,
+			)
+
+			result, err := r.getClusterKubeconfig(ctx, co)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeNil())
+		})
+
+		It("should return nil when kubeconfig Secret does not exist", func() {
+			hcp := &hypershiftv1beta1.HostedControlPlane{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-hcp-no-secret",
+					Namespace: hcpNamespace,
+				},
+			}
+			Expect(k8sClient.Create(ctx, hcp)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, hcp) })
+
+			hcp.Status.KubeConfig = &hypershiftv1beta1.KubeconfigSecretRef{
+				Name: "nonexistent-secret",
+				Key:  "kubeconfig",
+			}
+			Expect(k8sClient.Status().Update(ctx, hcp)).To(Succeed())
+
+			co := newClusterOrder("caas-kc-no-secret", testNamespace, nil)
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, co) })
+			co.Status.ClusterReference = &v1alpha1.ClusterOrderClusterReferenceType{
+				Namespace:         hcpNamespace,
+				HostedClusterName: "test-hcp-no-secret",
+			}
+			Expect(k8sClient.Status().Update(ctx, co)).To(Succeed())
+
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, nil, pollInterval, provisioning.DefaultMaxJobHistory,
+			)
+
+			result, err := r.getClusterKubeconfig(ctx, co)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result).To(BeNil())
+		})
+	})
+
+	Context("CaaS: provisioning trigger", func() {
+		It("should trigger CaaS provisioning for Ready ClusterOrder with backend ready", func() {
+			tenantName := "caas-prov-trigger"
+			createReadyTenantForStorage(ctx, tenantName, testNamespace)
+			createHubSecret(ctx, tenantName, secretsNamespace)
+			// VMaaS StorageClasses must already exist from tenant onboarding
+			// before CaaS provisioning runs, because the VMaaS resolution in
+			// handleUpdate returns early if no SCs are found.
+			createLabeledStorageClass(ctx, tenantName+"-vmaas-sc", tenantName, "default")
+
+			co := newClusterOrder("caas-prov-co-1", testNamespace, map[string]string{
+						osacTenantKey: tenantName,
+					})
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, co) })
+
+			co.Status.Phase = v1alpha1.ClusterOrderPhaseReady
+			Expect(k8sClient.Status().Update(ctx, co)).To(Succeed())
+
+			// ClusterStorageProvider triggers provisioning; the kubeconfig
+			// retrieval returns nil (no HCP) so the controller sets
+			// KubeConfigNotAvailable and continues.
+			clusterProvider := &mockProvisioningProvider{name: "caas-mock"}
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, clusterProvider, pollInterval, provisioning.DefaultMaxJobHistory,
+			)
+
+			nn := types.NamespacedName{Name: tenantName, Namespace: testNamespace}
+			_, err := r.Reconcile(ctx, storageReconcileRequest(nn))
+			Expect(err).NotTo(HaveOccurred())
+
+			// ClusterOrder should have the storage finalizer and
+			// KubeConfigNotAvailable condition
+			updatedCO := &v1alpha1.ClusterOrder{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(co), updatedCO)).To(Succeed())
+			Expect(updatedCO.Finalizers).To(ContainElement(clusterStorageFinalizer))
+			Expect(updatedCO.IsStatusConditionFalse(
+				string(v1alpha1.ClusterOrderConditionClusterStorageReady))).To(BeTrue())
+		})
+
+		It("should skip CaaS provisioning for non-Ready ClusterOrders", func() {
+			tenantName := "caas-prov-skip-notready"
+			createReadyTenantForStorage(ctx, tenantName, testNamespace)
+			createHubSecret(ctx, tenantName, secretsNamespace)
+
+			co := newClusterOrder("caas-prov-co-notready", testNamespace, map[string]string{
+						osacTenantKey: tenantName,
+					})
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, co) })
+
+			co.Status.Phase = v1alpha1.ClusterOrderPhaseProgressing
+			Expect(k8sClient.Status().Update(ctx, co)).To(Succeed())
+
+			clusterProvider := &mockProvisioningProvider{name: "caas-mock"}
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, clusterProvider, pollInterval, provisioning.DefaultMaxJobHistory,
+			)
+
+			nn := types.NamespacedName{Name: tenantName, Namespace: testNamespace}
+			_, err := r.Reconcile(ctx, storageReconcileRequest(nn))
+			Expect(err).NotTo(HaveOccurred())
+
+			updatedCO := &v1alpha1.ClusterOrder{}
+			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(co), updatedCO)).To(Succeed())
+			Expect(updatedCO.Finalizers).NotTo(ContainElement(clusterStorageFinalizer))
+		})
+	})
+
+	Context("CaaS: VMaaS regression", func() {
+		It("should not affect VMaaS provisioning when CaaS ClusterOrders exist", func() {
+			tenantName := "caas-vmaas-regression"
+			createReadyTenantForStorage(ctx, tenantName, testNamespace)
+			createHubSecret(ctx, tenantName, secretsNamespace)
+			createLabeledStorageClass(ctx, tenantName+"-vmaas-sc", tenantName, "default")
+
+			// Create a CaaS ClusterOrder for the same tenant
+			co := newClusterOrder("caas-regression-co", testNamespace, map[string]string{
+						osacTenantKey: tenantName,
+					})
+			Expect(k8sClient.Create(ctx, co)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, co) })
+
+			co.Status.Phase = v1alpha1.ClusterOrderPhaseReady
+			Expect(k8sClient.Status().Update(ctx, co)).To(Succeed())
+
+			// No cluster provider: VMaaS-only setup with CaaS ClusterOrder present
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, nil, pollInterval, provisioning.DefaultMaxJobHistory,
+			)
+
+			nn := types.NamespacedName{Name: tenantName, Namespace: testNamespace}
+			_, err := r.Reconcile(ctx, storageReconcileRequest(nn))
+			Expect(err).NotTo(HaveOccurred())
+
+			// VMaaS StorageClass should still be resolved on the Tenant
+			tenant := &v1alpha1.Tenant{}
+			Expect(k8sClient.Get(ctx, nn, tenant)).To(Succeed())
+			Expect(tenant.Status.StorageClasses).To(HaveLen(1))
+			Expect(tenant.Status.StorageClasses[0].Name).To(Equal(tenantName + "-vmaas-sc"))
+
+			clusterCond := tenant.GetStatusCondition(v1alpha1.TenantConditionClusterStorageReady)
+			Expect(clusterCond).NotTo(BeNil())
+			Expect(clusterCond.Status).To(Equal(metav1.ConditionTrue))
 		})
 	})
 })
