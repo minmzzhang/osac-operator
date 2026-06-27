@@ -258,6 +258,15 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 		if caasErr != nil || caasResult.RequeueAfter > 0 {
 			return caasResult, caasErr
 		}
+
+		// Handle individual ClusterOrder deletions while the Tenant is still
+		// alive. When a ClusterOrder is deleted, mapClusterOrderToTenant
+		// triggers Tenant reconciliation, and we clean up cluster-side storage
+		// for that specific cluster here.
+		caasDelResult, caasDelErr := r.handleCaaSDelete(ctx, instance, false)
+		if caasDelErr != nil || caasDelResult.RequeueAfter > 0 {
+			return caasDelResult, caasDelErr
+		}
 	}
 
 	return ctrl.Result{}, nil
@@ -446,6 +455,18 @@ func (r *StorageReconciler) handleDelete(ctx context.Context, instance *v1alpha1
 		return ctrl.Result{}, nil
 	}
 
+	// CaaS cleanup: remove cluster-side storage (StorageClasses, CSI) from
+	// all CaaS clusters and remove our finalizer from their ClusterOrders.
+	// The ClusterOrders themselves are not being deleted (they have no
+	// OwnerReference to the Tenant), but the storage backend is about to be
+	// torn down so cluster-side resources must be removed first.
+	if r.ClusterStorageProvider != nil {
+		caasResult, caasErr := r.handleCaaSDelete(ctx, instance, true)
+		if caasErr != nil || caasResult.RequeueAfter > 0 {
+			return caasResult, caasErr
+		}
+	}
+
 	// Stage 1: class cleanup
 	classDeprovJob := provisioning.FindLatestJobByType(instance.Status.ClusterStorageJobs, v1alpha1.JobTypeDeprovision)
 	classCleanupDone := classDeprovJob != nil && classDeprovJob.State.IsTerminal() && classDeprovJob.State.IsSuccessful()
@@ -527,7 +548,105 @@ func (r *StorageReconciler) handleClusterStorageProvisioning(ctx context.Context
 	)
 }
 
-// --- Deprovisioning ---
+// --- CaaS Deprovisioning ---
+
+// handleCaaSDelete removes cluster-side storage from CaaS clusters that have
+// the storage finalizer.
+//
+// When tenantDeleting=true (called from handleDelete): processes ALL ClusterOrders
+// with our finalizer because the backend is about to be torn down.
+//
+// When tenantDeleting=false (called from handleUpdate): processes only ClusterOrders
+// with a DeletionTimestamp, handling the case where a single cluster is being
+// destroyed while the Tenant is still alive.
+//
+// If the HostedControlPlane is already gone (cluster destroyed outside OSAC),
+// cleanup is skipped because there are no cluster-side resources left to remove.
+func (r *StorageReconciler) handleCaaSDelete(ctx context.Context, instance *v1alpha1.Tenant, tenantDeleting bool) (ctrl.Result, error) {
+	log := ctrllog.FromContext(ctx)
+	tenantName := instance.GetName()
+
+	clusterOrders := &v1alpha1.ClusterOrderList{}
+	if err := r.List(ctx, clusterOrders); err != nil {
+		return ctrl.Result{}, fmt.Errorf("list ClusterOrders for CaaS teardown: %w", err)
+	}
+
+	for i := range clusterOrders.Items {
+		co := &clusterOrders.Items[i]
+
+		if !controllerutil.ContainsFinalizer(co, clusterStorageFinalizer) {
+			continue
+		}
+
+		annotation, exists := co.GetAnnotations()[osacTenantKey]
+		if !exists || annotation != tenantName {
+			continue
+		}
+
+		// When called from handleUpdate, only process ClusterOrders that are
+		// actively being deleted. When the Tenant itself is being deleted, we
+		// process all ClusterOrders to clean up before backend teardown.
+		if !tenantDeleting && co.DeletionTimestamp.IsZero() {
+			continue
+		}
+
+		log.Info("tearing down CaaS cluster storage", "clusterOrder", co.Name, "tenant", tenantName)
+
+		kubeconfig, err := r.getClusterKubeconfig(ctx, co)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("get kubeconfig for teardown of ClusterOrder %s: %w", co.Name, err)
+		}
+
+		if kubeconfig == nil {
+			// HostedControlPlane is gone, so the cluster no longer exists.
+			// Nothing to clean up on the cluster side.
+			log.Info("HostedControlPlane not found during teardown, skipping cluster-side cleanup",
+				"clusterOrder", co.Name, "tenant", tenantName)
+			r.Recorder.Eventf(co, nil, corev1.EventTypeWarning, "KubeConfigNotAvailable", "Teardown",
+				"HostedControlPlane not found during storage teardown, skipping cleanup")
+		} else {
+			provCtx := provisioning.WithAdminKubeconfig(ctx, string(kubeconfig))
+
+			result, done, err := provisioning.RunDeprovisioningLifecycle(provCtx, r.ClusterStorageProvider, co,
+				&co.Status.ClusterStorageJobs, r.MaxJobHistory, r.StatusPollInterval)
+			if err != nil {
+				if updateErr := r.Status().Update(ctx, co); updateErr != nil {
+					log.Error(updateErr, "failed to update ClusterOrder status after teardown error", "clusterOrder", co.Name)
+				}
+				return result, err
+			}
+			if !done {
+				if updateErr := r.Status().Update(ctx, co); updateErr != nil {
+					log.Error(updateErr, "failed to update ClusterOrder status during teardown", "clusterOrder", co.Name)
+				}
+				return result, nil
+			}
+		}
+
+		r.removeTenantClusterStorageEntry(instance, co.Name)
+
+		controllerutil.RemoveFinalizer(co, clusterStorageFinalizer)
+		if err := r.Update(ctx, co); err != nil {
+			return ctrl.Result{}, fmt.Errorf("remove storage finalizer from ClusterOrder %s: %w", co.Name, err)
+		}
+
+		log.Info("CaaS cluster storage teardown complete", "clusterOrder", co.Name, "tenant", tenantName)
+	}
+
+	return ctrl.Result{}, nil
+}
+
+func (r *StorageReconciler) removeTenantClusterStorageEntry(tenant *v1alpha1.Tenant, clusterName string) {
+	filtered := make([]v1alpha1.ClusterStorageStatus, 0, len(tenant.Status.ClusterStorage))
+	for _, cs := range tenant.Status.ClusterStorage {
+		if cs.ClusterName != clusterName {
+			filtered = append(filtered, cs)
+		}
+	}
+	tenant.Status.ClusterStorage = filtered
+}
+
+// --- VMaaS Deprovisioning ---
 
 func (r *StorageReconciler) handleClusterStorageDeprovisioning(ctx context.Context, instance *v1alpha1.Tenant) (ctrl.Result, error) {
 	if r.ClusterStorageProvider == nil {
