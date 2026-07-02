@@ -280,10 +280,14 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 			return r.handleClusterStorageProvisioning(ctx, instance)
 		}
 
+		condMsg := formatResolvedStorageClasses(result)
+		if len(duplicateMessages) > 0 {
+			condMsg = condMsg + "; " + strings.Join(duplicateMessages, "; ")
+		}
 		instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
 			metav1.ConditionTrue,
 			v1alpha1.TenantReasonFound,
-			formatResolvedStorageClasses(result))
+			condMsg)
 		instance.Status.StorageClasses = result
 		instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
 			{ClusterName: clusterName, Ready: true, Reason: v1alpha1.TenantReasonFound},

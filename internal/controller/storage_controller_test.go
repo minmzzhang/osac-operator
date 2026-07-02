@@ -441,6 +441,39 @@ var _ = Describe("Storage Controller", func() {
 
 			Expect(tenant.Status.ClusterStorageJobs).To(BeEmpty())
 		})
+
+		It("should surface duplicate warnings in condition when some tiers resolve and others have duplicates", func() {
+			name := "storage-test-mixed-tiers-with-provider"
+			createReadyTenantForStorage(ctx, name, testNamespace)
+			createHubSecret(ctx, name, secretsNamespace)
+			createLabeledStorageClass(ctx, name+"-default-sc", name, "default")
+			createLabeledStorageClass(ctx, name+"-premium-sc-1", name, "premium")
+			createLabeledStorageClass(ctx, name+"-premium-sc-2", name, "premium")
+
+			clusterProvider := &mockProvisioningProvider{name: "cluster-storage-mock"}
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, clusterProvider, pollInterval,
+				provisioning.DefaultMaxJobHistory,
+			)
+
+			nn := types.NamespacedName{Name: name, Namespace: testNamespace}
+			_, err := r.Reconcile(ctx, storageReconcileRequest(nn))
+			Expect(err).NotTo(HaveOccurred())
+
+			tenant := &v1alpha1.Tenant{}
+			Expect(k8sClient.Get(ctx, nn, tenant)).To(Succeed())
+
+			clusterCond := tenant.GetStatusCondition(v1alpha1.TenantConditionClusterStorageReady)
+			Expect(clusterCond).NotTo(BeNil())
+			Expect(clusterCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(clusterCond.Message).To(ContainSubstring("default"))
+			Expect(clusterCond.Message).To(ContainSubstring("premium"))
+			Expect(clusterCond.Message).To(ContainSubstring("multiple tenant StorageClasses"))
+
+			Expect(tenant.Status.StorageClasses).To(HaveLen(1))
+			Expect(tenant.Status.StorageClasses[0].Tier).To(Equal("default"))
+		})
 	})
 
 	Context("Tier resolution", func() {
