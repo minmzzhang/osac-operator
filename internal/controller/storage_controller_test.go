@@ -353,11 +353,41 @@ var _ = Describe("Storage Controller", func() {
 			Expect(tenant.Status.StorageClasses[0].Tier).To(Equal("default"))
 		})
 
-		It("should trigger cluster storage provisioning when only default SC exists and provider is configured", func() {
+		It("should use Default SC fallback and trigger provisioning when only default SC exists and provider is configured", func() {
 			name := "storage-test-default-only-with-provider"
 			createReadyTenantForStorage(ctx, name, testNamespace)
 			createHubSecret(ctx, name, secretsNamespace)
 			createLabeledStorageClass(ctx, "shared-default-sc-"+name, defaultStorageClassSentinel, "default")
+
+			clusterProvider := &mockProvisioningProvider{name: "cluster-storage-mock"}
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, clusterProvider, pollInterval,
+				provisioning.DefaultMaxJobHistory,
+			)
+
+			nn := types.NamespacedName{Name: name, Namespace: testNamespace}
+			_, err := r.Reconcile(ctx, storageReconcileRequest(nn))
+			Expect(err).NotTo(HaveOccurred())
+
+			tenant := &v1alpha1.Tenant{}
+			Expect(k8sClient.Get(ctx, nn, tenant)).To(Succeed())
+
+			clusterCond := tenant.GetStatusCondition(v1alpha1.TenantConditionClusterStorageReady)
+			Expect(clusterCond).NotTo(BeNil())
+			Expect(clusterCond.Status).To(Equal(metav1.ConditionTrue))
+			Expect(clusterCond.Reason).To(Equal(v1alpha1.TenantReasonFound))
+			Expect(clusterCond.Message).To(ContainSubstring("tenant-specific provisioning pending"))
+
+			Expect(tenant.Status.StorageClasses).To(HaveLen(1))
+			Expect(tenant.Status.StorageClasses[0].Name).To(Equal("shared-default-sc-" + name))
+			Expect(tenant.Status.ClusterStorageJobs).To(HaveLen(1))
+		})
+
+		It("should set ClusterStorageReady=False and trigger provisioning when no SCs at all and provider is configured", func() {
+			name := "storage-test-no-sc-with-provider"
+			createReadyTenantForStorage(ctx, name, testNamespace)
+			createHubSecret(ctx, name, secretsNamespace)
 
 			clusterProvider := &mockProvisioningProvider{name: "cluster-storage-mock"}
 			r := NewStorageReconciler(

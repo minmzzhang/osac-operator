@@ -216,11 +216,13 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 	clusterName := string(r.targetCluster)
 
 	if r.ClusterStorageProvider != nil {
-		// When AAP is configured, only accept tenant-specific StorageClasses
-		// (labeled osac.openshift.io/tenant=<tenantName>). Default tenant SCs
-		// (labeled tenant=Default) are not used as a substitute for
-		// AAP-provisioned storage. If no tenant-specific SC exists, trigger
-		// the AAP cluster storage job to create one.
+		// When AAP is configured, prefer tenant-specific StorageClasses
+		// (labeled osac.openshift.io/tenant=<tenantName>). If none exist,
+		// fall back to shared Default SCs so VMs can provision immediately,
+		// and trigger the AAP cluster storage job to create a proper
+		// tenant-specific SC. Once the tenant-specific SC appears (via the
+		// StorageClass watch), the next reconcile picks it up and replaces
+		// the Default.
 		result, duplicateMessages, err := r.resolveTenantSpecificStorageClasses(ctx, targetClient, tenantName)
 		if err != nil {
 			return ctrl.Result{}, err
@@ -231,23 +233,50 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 		}
 
 		if len(result) == 0 {
-			reason := v1alpha1.TenantReasonNotFound
-			condMsg := fmt.Sprintf("no tenant-specific StorageClass found for tenant %q", tenantName)
 			if len(duplicateMessages) > 0 {
-				reason = v1alpha1.TenantReasonMultipleFound
-				condMsg = strings.Join(duplicateMessages, "; ")
-			}
-			instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
-				metav1.ConditionFalse,
-				reason,
-				condMsg)
-			instance.Status.StorageClasses = nil
-			instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
-				{ClusterName: clusterName, Ready: false, Reason: reason},
-			}
-			if reason == v1alpha1.TenantReasonMultipleFound {
+				instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
+					metav1.ConditionFalse,
+					v1alpha1.TenantReasonMultipleFound,
+					strings.Join(duplicateMessages, "; "))
+				instance.Status.StorageClasses = nil
+				instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
+					{ClusterName: clusterName, Ready: false, Reason: v1alpha1.TenantReasonMultipleFound},
+				}
 				return ctrl.Result{}, nil
 			}
+
+			// No tenant-specific SCs. Check for shared Default SCs so VMs
+			// can provision while the AAP job creates the real one.
+			defaultFallback, err := getTenantStorageClasses(ctx, targetClient, tenantName)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+
+			if len(defaultFallback.resolved) > 0 {
+				instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
+					metav1.ConditionTrue,
+					v1alpha1.TenantReasonFound,
+					defaultFallback.conditionMessage()+"; tenant-specific provisioning pending")
+				instance.Status.StorageClasses = defaultFallback.resolved
+				instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
+					{ClusterName: clusterName, Ready: true, Reason: v1alpha1.TenantReasonFound},
+				}
+			} else {
+				instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
+					metav1.ConditionFalse,
+					v1alpha1.TenantReasonNotFound,
+					fmt.Sprintf("no StorageClass found for tenant %q", tenantName))
+				instance.Status.StorageClasses = nil
+				instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
+					{ClusterName: clusterName, Ready: false, Reason: v1alpha1.TenantReasonNotFound},
+				}
+			}
+
+			// TODO(OSAC-1957): when the Backend API confirms a storage
+			// backend is registered, requeue with backoff instead of
+			// stopping after the AAP job fails. The Default SC fallback
+			// should be temporary in that case, and the controller should
+			// keep retrying until a tenant-specific SC replaces it.
 			return r.handleClusterStorageProvisioning(ctx, instance)
 		}
 
