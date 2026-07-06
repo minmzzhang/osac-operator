@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -889,9 +890,16 @@ func (r *StorageReconciler) resolveTenantSpecificStorageClasses(
 		return nil, nil, err
 	}
 	byTier := groupByTier(scList.Items)
+	sortedTiers := make([]string, 0, len(byTier))
+	for tier := range byTier {
+		sortedTiers = append(sortedTiers, tier)
+	}
+	sort.Strings(sortedTiers)
+
 	var resolved []v1alpha1.ResolvedStorageClass
 	var duplicateMessages []string
-	for tier, scs := range byTier {
+	for _, tier := range sortedTiers {
+		scs := byTier[tier]
 		switch len(scs) {
 		case 1:
 			resolved = append(resolved, v1alpha1.ResolvedStorageClass{
