@@ -152,7 +152,7 @@ func (r *PublicIPReconciler) Reconcile(ctx context.Context, req mcreconcile.Requ
 func (r *PublicIPReconciler) updateStatusWithRetry(ctx context.Context, key client.ObjectKey, newStatus v1alpha1.PublicIPStatus) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &v1alpha1.PublicIP{}
-		if err := r.Get(ctx, key, latest); err != nil {
+		if err := r.APIReader.Get(ctx, key, latest); err != nil {
 			return err
 		}
 		latest.Status = newStatus

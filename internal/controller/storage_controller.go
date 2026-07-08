@@ -62,6 +62,7 @@ const (
 // status.storageClasses, status.storageBackendJobs, and status.clusterStorageJobs on the Tenant CR.
 type StorageReconciler struct {
 	client.Client
+	APIReader              client.Reader
 	Scheme                 *runtime.Scheme
 	Recorder               events.EventRecorder
 	tenantNamespace        string
@@ -105,6 +106,7 @@ func NewStorageReconciler(
 
 	return &StorageReconciler{
 		Client:                 mgr.GetLocalManager().GetClient(),
+		APIReader:              mgr.GetLocalManager().GetAPIReader(),
 		Scheme:                 mgr.GetLocalManager().GetScheme(),
 		Recorder:               mgr.GetLocalManager().GetEventRecorder(storageControllerName),
 		tenantNamespace:        tenantNamespace,
@@ -160,7 +162,7 @@ func (r *StorageReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 func (r *StorageReconciler) updateTenantStatusWithRetry(ctx context.Context, key client.ObjectKey, newStatus v1alpha1.TenantStatus) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &v1alpha1.Tenant{}
-		if err := r.Get(ctx, key, latest); err != nil {
+		if err := r.APIReader.Get(ctx, key, latest); err != nil {
 			return err
 		}
 		latest.Status = newStatus
@@ -171,7 +173,7 @@ func (r *StorageReconciler) updateTenantStatusWithRetry(ctx context.Context, key
 func (r *StorageReconciler) updateClusterOrderStatusWithRetry(ctx context.Context, key client.ObjectKey, newStatus v1alpha1.ClusterOrderStatus) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &v1alpha1.ClusterOrder{}
-		if err := r.Get(ctx, key, latest); err != nil {
+		if err := r.APIReader.Get(ctx, key, latest); err != nil {
 			return err
 		}
 		latest.Status = newStatus

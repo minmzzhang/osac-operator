@@ -161,7 +161,7 @@ func (r *ClusterOrderReconciler) Reconcile(ctx context.Context, req ctrl.Request
 func (r *ClusterOrderReconciler) updateStatusWithRetry(ctx context.Context, key client.ObjectKey, newStatus v1alpha1.ClusterOrderStatus) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &v1alpha1.ClusterOrder{}
-		if err := r.Get(ctx, key, latest); err != nil {
+		if err := r.apiReader.Get(ctx, key, latest); err != nil {
 			return err
 		}
 		latest.Status = newStatus
