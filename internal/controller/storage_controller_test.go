@@ -384,6 +384,42 @@ var _ = Describe("Storage Controller", func() {
 			Expect(tenant.Status.ClusterStorageJobs).To(HaveLen(1))
 		})
 
+		It("should detect duplicate Default SCs in AAP fallback and set ClusterStorageReady=False", func() {
+			name := "storage-test-dup-default-aap"
+			createReadyTenantForStorage(ctx, name, testNamespace)
+			createHubSecret(ctx, name, secretsNamespace)
+			// Two Default SCs for the same tier: triggers duplicate detection
+			createLabeledStorageClass(ctx, "shared-default-dup1-"+name, defaultStorageClassSentinel, "default")
+			createLabeledStorageClass(ctx, "shared-default-dup2-"+name, defaultStorageClassSentinel, "default")
+
+			clusterProvider := &mockProvisioningProvider{name: "cluster-storage-mock"}
+			r := NewStorageReconciler(
+				testMcManager, testNamespace, mcmanager.LocalCluster,
+				nil, clusterProvider, pollInterval,
+				provisioning.DefaultMaxJobHistory,
+			)
+
+			nn := types.NamespacedName{Name: name, Namespace: testNamespace}
+			_, err := r.Reconcile(ctx, storageReconcileRequest(nn))
+			Expect(err).NotTo(HaveOccurred())
+
+			tenant := &v1alpha1.Tenant{}
+			Expect(k8sClient.Get(ctx, nn, tenant)).To(Succeed())
+
+			// Default fallback found duplicates, so no SCs are resolved.
+			// The condition should reflect NotFound (no usable SCs) and
+			// provisioning should still be triggered to create the real one.
+			clusterCond := tenant.GetStatusCondition(v1alpha1.TenantConditionClusterStorageReady)
+			Expect(clusterCond).NotTo(BeNil())
+			Expect(clusterCond.Status).To(Equal(metav1.ConditionFalse))
+			Expect(clusterCond.Reason).To(Equal(v1alpha1.TenantReasonNotFound))
+
+			Expect(tenant.Status.StorageClasses).To(BeNil())
+			// Cluster storage provisioning should still run to create a
+			// tenant-specific SC that supersedes the ambiguous defaults
+			Expect(tenant.Status.ClusterStorageJobs).To(HaveLen(1))
+		})
+
 		It("should set ClusterStorageReady=False and trigger provisioning when no SCs at all and provider is configured", func() {
 			name := "storage-test-no-sc-with-provider"
 			createReadyTenantForStorage(ctx, name, testNamespace)
