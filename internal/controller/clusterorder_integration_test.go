@@ -24,6 +24,7 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	osacv1alpha1 "github.com/osac-project/osac-operator/api/v1alpha1"
@@ -355,6 +356,29 @@ var _ = Describe("ClusterOrder Integration Tests", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result2.RequeueAfter).To(BeNumerically(">", result1.RequeueAfter), "second failure should have longer backoff")
 			Expect(result2.RequeueAfter).To(BeNumerically("~", 10*time.Minute, 30*time.Second), "backoff should double the 5-minute gap")
+		})
+	})
+
+	Context("Status patch safety", func() {
+		It("should preserve storage controller fields when patching status", func() {
+			const name = "cluster-order-patch-preserves-storage"
+			instance := newTestClusterOrder(name)
+			Expect(k8sClient.Create(ctx, instance)).To(Succeed())
+			DeferCleanup(func() { _ = k8sClient.Delete(ctx, instance) })
+
+			instance = getClusterOrder(name)
+			instance.Status.ClusterStorageJobs = []osacv1alpha1.JobStatus{
+				{JobID: "storage-job-1", Type: osacv1alpha1.JobTypeProvision, State: osacv1alpha1.JobStateSucceeded, Timestamp: metav1.Now()},
+			}
+			Expect(k8sClient.Status().Update(ctx, instance)).To(Succeed())
+
+			nn := types.NamespacedName{Name: name, Namespace: clusterOrderTestNamespace}
+			_, err := reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: nn})
+			Expect(err).NotTo(HaveOccurred())
+
+			instance = getClusterOrder(name)
+			Expect(instance.Status.ClusterStorageJobs).To(HaveLen(1))
+			Expect(instance.Status.ClusterStorageJobs[0].JobID).To(Equal("storage-job-1"))
 		})
 	})
 

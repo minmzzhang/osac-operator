@@ -148,7 +148,7 @@ func (r *ClusterOrderReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err == nil {
 		if !equality.Semantic.DeepEqual(instance.Status, *oldstatus) {
 			log.Info("status requires update")
-			if err := r.updateStatusWithRetry(ctx, req.NamespacedName, instance.Status); err != nil {
+			if err := r.patchStatusWithRetry(ctx, req.NamespacedName, instance.Status); err != nil {
 				return res, err
 			}
 		}
@@ -158,14 +158,22 @@ func (r *ClusterOrderReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	return res, err
 }
 
-func (r *ClusterOrderReconciler) updateStatusWithRetry(ctx context.Context, key client.ObjectKey, newStatus v1alpha1.ClusterOrderStatus) error {
+func (r *ClusterOrderReconciler) patchStatusWithRetry(ctx context.Context, key client.ObjectKey, computed v1alpha1.ClusterOrderStatus) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &v1alpha1.ClusterOrder{}
 		if err := r.apiReader.Get(ctx, key, latest); err != nil {
 			return err
 		}
-		latest.Status = newStatus
-		return r.Status().Update(ctx, latest)
+		base := latest.DeepCopy()
+		latest.Status.Phase = computed.Phase
+		latest.Status.ClusterReference = computed.ClusterReference
+		latest.Status.NodeRequests = computed.NodeRequests
+		latest.Status.ProvisioningJobs = computed.ProvisioningJobs
+		latest.Status.DesiredConfigVersion = computed.DesiredConfigVersion
+		for _, c := range computed.Conditions {
+			meta.SetStatusCondition(&latest.Status.Conditions, c)
+		}
+		return r.Status().Patch(ctx, latest, client.MergeFrom(base))
 	})
 }
 
@@ -567,7 +575,7 @@ func (r *ClusterOrderReconciler) handleProvisioning(ctx context.Context, instanc
 			})
 		},
 		func() error {
-			return r.updateStatusWithRetry(ctx, client.ObjectKeyFromObject(instance), instance.Status)
+			return r.patchStatusWithRetry(ctx, client.ObjectKeyFromObject(instance), instance.Status)
 		},
 	)
 }

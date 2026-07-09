@@ -149,13 +149,13 @@ func (r *ExternalIPReconciler) Reconcile(ctx context.Context, req mcreconcile.Re
 	return res, err
 }
 
-func (r *ExternalIPReconciler) updateStatusWithRetry(ctx context.Context, key client.ObjectKey, newStatus v1alpha1.ExternalIPStatus) error {
+func (r *ExternalIPReconciler) updateStatusWithRetry(ctx context.Context, key client.ObjectKey, computed v1alpha1.ExternalIPStatus) error {
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		latest := &v1alpha1.ExternalIP{}
 		if err := r.APIReader.Get(ctx, key, latest); err != nil {
 			return err
 		}
-		latest.Status = newStatus
+		latest.Status = computed
 		return r.Status().Update(ctx, latest)
 	})
 }
