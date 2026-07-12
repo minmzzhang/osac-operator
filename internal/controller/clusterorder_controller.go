@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -147,7 +148,7 @@ func (r *ClusterOrderReconciler) Reconcile(ctx context.Context, req ctrl.Request
 	if err == nil {
 		if !equality.Semantic.DeepEqual(instance.Status, *oldstatus) {
 			log.Info("status requires update")
-			if err := r.Status().Update(ctx, instance); err != nil {
+			if err := r.patchStatusWithRetry(ctx, req.NamespacedName, instance.Status); err != nil {
 				return res, err
 			}
 		}
@@ -155,6 +156,25 @@ func (r *ClusterOrderReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	log.Info("end reconcile")
 	return res, err
+}
+
+func (r *ClusterOrderReconciler) patchStatusWithRetry(ctx context.Context, key client.ObjectKey, computed v1alpha1.ClusterOrderStatus) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &v1alpha1.ClusterOrder{}
+		if err := r.apiReader.Get(ctx, key, latest); err != nil {
+			return err
+		}
+		base := latest.DeepCopy()
+		latest.Status.Phase = computed.Phase
+		latest.Status.ClusterReference = computed.ClusterReference
+		latest.Status.NodeRequests = computed.NodeRequests
+		latest.Status.ProvisioningJobs = computed.ProvisioningJobs
+		latest.Status.DesiredConfigVersion = computed.DesiredConfigVersion
+		for _, c := range computed.Conditions {
+			meta.SetStatusCondition(&latest.Status.Conditions, c)
+		}
+		return r.Status().Patch(ctx, latest, client.MergeFrom(base))
+	})
 }
 
 func NamespacePredicate(namespace string) predicate.Predicate {
@@ -554,7 +574,9 @@ func (r *ClusterOrderReconciler) handleProvisioning(ctx context.Context, instanc
 				return obj.(*v1alpha1.ClusterOrder).Status.ProvisioningJobs
 			})
 		},
-		func() error { return r.Status().Update(ctx, instance) },
+		func() error {
+			return r.patchStatusWithRetry(ctx, client.ObjectKeyFromObject(instance), instance.Status)
+		},
 	)
 }
 

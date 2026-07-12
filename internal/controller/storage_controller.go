@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
+	"strings"
 	"time"
 
 	hypershiftv1beta1 "github.com/openshift/hypershift/api/hypershift/v1beta1"
@@ -32,6 +34,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/tools/events"
+	"k8s.io/client-go/util/retry"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -59,6 +62,7 @@ const (
 // status.storageClasses, status.storageBackendJobs, and status.clusterStorageJobs on the Tenant CR.
 type StorageReconciler struct {
 	client.Client
+	APIReader              client.Reader
 	Scheme                 *runtime.Scheme
 	Recorder               events.EventRecorder
 	tenantNamespace        string
@@ -102,6 +106,7 @@ func NewStorageReconciler(
 
 	return &StorageReconciler{
 		Client:                 mgr.GetLocalManager().GetClient(),
+		APIReader:              mgr.GetLocalManager().GetAPIReader(),
 		Scheme:                 mgr.GetLocalManager().GetScheme(),
 		Recorder:               mgr.GetLocalManager().GetEventRecorder(storageControllerName),
 		tenantNamespace:        tenantNamespace,
@@ -145,13 +150,46 @@ func (r *StorageReconciler) Reconcile(ctx context.Context, req mcreconcile.Reque
 
 	if !equality.Semantic.DeepEqual(instance.Status, *oldstatus) {
 		log.Info("storage status requires update")
-		if updateErr := r.Status().Update(ctx, instance); updateErr != nil {
+		if updateErr := r.patchTenantStorageStatus(ctx, client.ObjectKeyFromObject(instance), instance.Status); updateErr != nil {
 			return ctrl.Result{}, updateErr
 		}
 	}
 
 	log.Info("end storage reconcile")
 	return res, err
+}
+
+func (r *StorageReconciler) patchTenantStorageStatus(ctx context.Context, key client.ObjectKey, computed v1alpha1.TenantStatus) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &v1alpha1.Tenant{}
+		if err := r.APIReader.Get(ctx, key, latest); err != nil {
+			return err
+		}
+		base := latest.DeepCopy()
+		latest.Status.StorageClasses = computed.StorageClasses
+		latest.Status.ClusterStorage = computed.ClusterStorage
+		latest.Status.StorageBackendJobs = computed.StorageBackendJobs
+		latest.Status.ClusterStorageJobs = computed.ClusterStorageJobs
+		for _, c := range computed.Conditions {
+			apimeta.SetStatusCondition(&latest.Status.Conditions, c)
+		}
+		return r.Status().Patch(ctx, latest, client.MergeFrom(base))
+	})
+}
+
+func (r *StorageReconciler) patchClusterOrderStorageStatus(ctx context.Context, key client.ObjectKey, computed v1alpha1.ClusterOrderStatus) error {
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		latest := &v1alpha1.ClusterOrder{}
+		if err := r.APIReader.Get(ctx, key, latest); err != nil {
+			return err
+		}
+		base := latest.DeepCopy()
+		latest.Status.ClusterStorageJobs = computed.ClusterStorageJobs
+		for _, c := range computed.Conditions {
+			apimeta.SetStatusCondition(&latest.Status.Conditions, c)
+		}
+		return r.Status().Patch(ctx, latest, client.MergeFrom(base))
+	})
 }
 
 func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1.Tenant) (ctrl.Result, error) {
@@ -173,73 +211,168 @@ func (r *StorageReconciler) handleUpdate(ctx context.Context, instance *v1alpha1
 		return ctrl.Result{}, err
 	}
 
+	// TODO(OSAC-1957): BackendProvider != nil only means AAP is configured, not
+	// that a storage backend (e.g. VAST) is registered. When AAP is configured
+	// for compute provisioning but no backend exists, the controller triggers
+	// a backend provisioning job that will fail. Wire the Backend API
+	// (private.v1.StorageBackends/List) to check if a backend is registered
+	// before entering the AAP path.
 	if !hubSecretReady {
-		instance.SetStatusCondition(v1alpha1.TenantConditionStorageBackendReady,
-			metav1.ConditionFalse,
-			v1alpha1.TenantReasonNotFound,
-			fmt.Sprintf("Hub Secret for tenant %q not found", tenantName))
-
 		if r.BackendProvider != nil {
+			instance.SetStatusCondition(v1alpha1.TenantConditionStorageBackendReady,
+				metav1.ConditionFalse,
+				v1alpha1.TenantReasonNotFound,
+				fmt.Sprintf("Hub Secret for tenant %q not found", tenantName))
 			return r.handleBackendProvisioning(ctx, instance)
 		}
+		// When no provisioning provider is configured (no AAP URL/token),
+		// the controller cannot create hub Secrets via AAP. This is the
+		// normal state for prepare-tenant.sh environments that run OSAC
+		// without a VAST storage backend. Instead of blocking here, fall
+		// through to Stage 2 so the controller can resolve StorageClasses
+		// from manually labeled SCs and populate status.storageClasses,
+		// which the compute instance controller needs to provision VMs.
 		instance.SetStatusCondition(v1alpha1.TenantConditionStorageBackendReady,
 			metav1.ConditionFalse,
 			v1alpha1.TenantReasonNoProvider,
 			"No backend provider configured")
-		return ctrl.Result{}, nil
+	} else {
+		instance.SetStatusCondition(v1alpha1.TenantConditionStorageBackendReady,
+			metav1.ConditionTrue,
+			v1alpha1.TenantReasonFound,
+			fmt.Sprintf("Hub Secret for tenant %q exists", tenantName))
 	}
-
-	instance.SetStatusCondition(v1alpha1.TenantConditionStorageBackendReady,
-		metav1.ConditionTrue,
-		v1alpha1.TenantReasonFound,
-		fmt.Sprintf("Hub Secret for tenant %q exists", tenantName))
 	// TODO(OSAC-1111): populate StorageBackendStatus once StorageBackend API provides name/provider
 
-	// Stage 2: resolve StorageClasses on target cluster
+	// Stage 2: resolve StorageClasses on target cluster.
 	targetClient, err := getTargetClient(ctx, r.mgr, r.targetCluster)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	result, err := getTenantStorageClasses(ctx, targetClient, tenantName)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-
-	for _, msg := range result.duplicateMessages {
-		r.Recorder.Eventf(instance, nil, corev1.EventTypeWarning, eventReasonDuplicateStorageClass, eventActionDetectDuplicate, "%s", msg)
-	}
-
 	clusterName := string(r.targetCluster)
 
-	if len(result.resolved) == 0 {
-		reason := v1alpha1.TenantReasonNotFound
-		if len(result.duplicateMessages) > 0 {
-			reason = v1alpha1.TenantReasonMultipleFound
-		}
-		condMsg := result.conditionMessage()
-		instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
-			metav1.ConditionFalse,
-			reason,
-			condMsg)
-		instance.Status.StorageClasses = nil
-		instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
-			{ClusterName: clusterName, Ready: false, Reason: reason},
+	if r.ClusterStorageProvider != nil {
+		// When AAP is configured, prefer tenant-specific StorageClasses
+		// (labeled osac.openshift.io/tenant=<tenantName>). If none exist,
+		// fall back to shared Default SCs so VMs can provision immediately,
+		// and trigger the AAP cluster storage job to create a proper
+		// tenant-specific SC. Once the tenant-specific SC appears (via the
+		// StorageClass watch), the next reconcile picks it up and replaces
+		// the Default.
+		result, duplicateMessages, err := r.resolveTenantSpecificStorageClasses(ctx, targetClient, tenantName)
+		if err != nil {
+			return ctrl.Result{}, err
 		}
 
-		if r.ClusterStorageProvider != nil && reason == v1alpha1.TenantReasonNotFound {
+		for _, msg := range duplicateMessages {
+			r.Recorder.Eventf(instance, nil, corev1.EventTypeWarning, eventReasonDuplicateStorageClass, eventActionDetectDuplicate, "%s", msg)
+		}
+
+		if len(result) == 0 {
+			if len(duplicateMessages) > 0 {
+				instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
+					metav1.ConditionFalse,
+					v1alpha1.TenantReasonMultipleFound,
+					strings.Join(duplicateMessages, "; "))
+				instance.Status.StorageClasses = nil
+				instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
+					{ClusterName: clusterName, Ready: false, Reason: v1alpha1.TenantReasonMultipleFound},
+				}
+				return ctrl.Result{}, nil
+			}
+
+			// No tenant-specific SCs. Check for shared Default SCs so VMs
+			// can provision while the AAP job creates the real one.
+			defaultFallback, err := getTenantStorageClasses(ctx, targetClient, tenantName)
+			if err != nil {
+				return ctrl.Result{}, err
+			}
+
+			for _, msg := range defaultFallback.duplicateMessages {
+				r.Recorder.Eventf(instance, nil, corev1.EventTypeWarning, eventReasonDuplicateStorageClass, eventActionDetectDuplicate, "%s", msg)
+			}
+
+			if len(defaultFallback.resolved) > 0 {
+				instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
+					metav1.ConditionTrue,
+					v1alpha1.TenantReasonFound,
+					defaultFallback.conditionMessage()+"; tenant-specific provisioning pending")
+				instance.Status.StorageClasses = defaultFallback.resolved
+				instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
+					{ClusterName: clusterName, Ready: true, Reason: v1alpha1.TenantReasonFound},
+				}
+			} else {
+				instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
+					metav1.ConditionFalse,
+					v1alpha1.TenantReasonNotFound,
+					fmt.Sprintf("no StorageClass found for tenant %q", tenantName))
+				instance.Status.StorageClasses = nil
+				instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
+					{ClusterName: clusterName, Ready: false, Reason: v1alpha1.TenantReasonNotFound},
+				}
+			}
+
+			// TODO(OSAC-1957): when the Backend API confirms a storage
+			// backend is registered, requeue with backoff instead of
+			// stopping after the AAP job fails. The Default SC fallback
+			// should be temporary in that case, and the controller should
+			// keep retrying until a tenant-specific SC replaces it.
 			return r.handleClusterStorageProvisioning(ctx, instance)
 		}
-		return ctrl.Result{}, nil
-	}
 
-	instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
-		metav1.ConditionTrue,
-		v1alpha1.TenantReasonFound,
-		result.conditionMessage())
-	instance.Status.StorageClasses = result.resolved
-	instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
-		{ClusterName: clusterName, Ready: true, Reason: v1alpha1.TenantReasonFound},
+		condMsg := formatResolvedStorageClasses(result)
+		if len(duplicateMessages) > 0 {
+			condMsg = condMsg + "; " + strings.Join(duplicateMessages, "; ")
+		}
+		instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
+			metav1.ConditionTrue,
+			v1alpha1.TenantReasonFound,
+			condMsg)
+		instance.Status.StorageClasses = result
+		instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
+			{ClusterName: clusterName, Ready: true, Reason: v1alpha1.TenantReasonFound},
+		}
+	} else {
+		// When no provisioning provider is configured, resolve StorageClasses
+		// using the full tier resolution logic: tenant-specific SCs take
+		// priority, with shared default SCs (labeled tenant=Default) as
+		// fallback. This serves environments running OSAC without AAP/VAST
+		// where an admin or prepare-tenant.sh has labeled existing
+		// StorageClasses manually.
+		result, err := getTenantStorageClasses(ctx, targetClient, tenantName)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+
+		for _, msg := range result.duplicateMessages {
+			r.Recorder.Eventf(instance, nil, corev1.EventTypeWarning, eventReasonDuplicateStorageClass, eventActionDetectDuplicate, "%s", msg)
+		}
+
+		if len(result.resolved) == 0 {
+			reason := v1alpha1.TenantReasonNotFound
+			if len(result.duplicateMessages) > 0 {
+				reason = v1alpha1.TenantReasonMultipleFound
+			}
+			instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
+				metav1.ConditionFalse,
+				reason,
+				result.conditionMessage())
+			instance.Status.StorageClasses = nil
+			instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
+				{ClusterName: clusterName, Ready: false, Reason: reason},
+			}
+			return ctrl.Result{}, nil
+		}
+
+		instance.SetStatusCondition(v1alpha1.TenantConditionClusterStorageReady,
+			metav1.ConditionTrue,
+			v1alpha1.TenantReasonFound,
+			result.conditionMessage())
+		instance.Status.StorageClasses = result.resolved
+		instance.Status.ClusterStorage = []v1alpha1.ClusterStorageStatus{
+			{ClusterName: clusterName, Ready: true, Reason: v1alpha1.TenantReasonFound},
+		}
 	}
 
 	// Poll any non-terminal class provision job to update its status
@@ -328,7 +461,7 @@ func (r *StorageReconciler) handleCaaSUpdate(ctx context.Context, instance *v1al
 				metav1.ConditionFalse,
 				"Kubeconfig not yet available for CaaS cluster",
 				"KubeConfigNotAvailable")
-			if err := r.Status().Update(ctx, co); err != nil {
+			if err := r.patchClusterOrderStorageStatus(ctx, client.ObjectKeyFromObject(co), co.Status); err != nil {
 				return ctrl.Result{}, fmt.Errorf("update ClusterOrder %s status: %w", co.Name, err)
 			}
 			continue
@@ -346,7 +479,9 @@ func (r *StorageReconciler) handleCaaSUpdate(ctx context.Context, instance *v1al
 						return obj.(*v1alpha1.ClusterOrder).Status.ClusterStorageJobs
 					})
 			},
-			func() error { return r.Status().Update(ctx, co) },
+			func() error {
+				return r.patchClusterOrderStorageStatus(ctx, client.ObjectKeyFromObject(co), co.Status)
+			},
 		)
 		if provErr != nil {
 			co.SetStatusCondition(
@@ -354,14 +489,14 @@ func (r *StorageReconciler) handleCaaSUpdate(ctx context.Context, instance *v1al
 				metav1.ConditionFalse,
 				fmt.Sprintf("Provisioning failed: %v", provErr),
 				"ProvisionFailed")
-			if updateErr := r.Status().Update(ctx, co); updateErr != nil {
+			if updateErr := r.patchClusterOrderStorageStatus(ctx, client.ObjectKeyFromObject(co), co.Status); updateErr != nil {
 				log.Error(updateErr, "failed to update ClusterOrder status after provision error", "clusterOrder", co.Name)
 			}
 			return provResult, provErr
 		}
 
 		if provResult.RequeueAfter > 0 {
-			if err := r.Status().Update(ctx, co); err != nil {
+			if err := r.patchClusterOrderStorageStatus(ctx, client.ObjectKeyFromObject(co), co.Status); err != nil {
 				return ctrl.Result{}, fmt.Errorf("update ClusterOrder %s status: %w", co.Name, err)
 			}
 			return provResult, nil
@@ -402,7 +537,7 @@ func (r *StorageReconciler) handleCaaSUpdate(ctx context.Context, instance *v1al
 				reason)
 		}
 
-		if err := r.Status().Update(ctx, co); err != nil {
+		if err := r.patchClusterOrderStorageStatus(ctx, client.ObjectKeyFromObject(co), co.Status); err != nil {
 			return ctrl.Result{}, fmt.Errorf("update ClusterOrder %s status: %w", co.Name, err)
 		}
 
@@ -523,7 +658,9 @@ func (r *StorageReconciler) handleBackendProvisioning(ctx context.Context, insta
 					return obj.(*v1alpha1.Tenant).Status.StorageBackendJobs
 				})
 		},
-		func() error { return r.Status().Update(ctx, instance) },
+		func() error {
+			return r.patchTenantStorageStatus(ctx, client.ObjectKeyFromObject(instance), instance.Status)
+		},
 	)
 }
 
@@ -547,7 +684,9 @@ func (r *StorageReconciler) handleClusterStorageProvisioning(ctx context.Context
 					return obj.(*v1alpha1.Tenant).Status.ClusterStorageJobs
 				})
 		},
-		func() error { return r.Status().Update(ctx, instance) },
+		func() error {
+			return r.patchTenantStorageStatus(ctx, client.ObjectKeyFromObject(instance), instance.Status)
+		},
 	)
 }
 
@@ -613,13 +752,13 @@ func (r *StorageReconciler) handleCaaSDelete(ctx context.Context, instance *v1al
 			result, done, err := provisioning.RunDeprovisioningLifecycle(provCtx, r.ClusterStorageProvider, co,
 				&co.Status.ClusterStorageJobs, r.MaxJobHistory, r.StatusPollInterval)
 			if err != nil {
-				if updateErr := r.Status().Update(ctx, co); updateErr != nil {
+				if updateErr := r.patchClusterOrderStorageStatus(ctx, client.ObjectKeyFromObject(co), co.Status); updateErr != nil {
 					log.Error(updateErr, "failed to update ClusterOrder status after teardown error", "clusterOrder", co.Name)
 				}
 				return result, err
 			}
 			if !done {
-				if updateErr := r.Status().Update(ctx, co); updateErr != nil {
+				if updateErr := r.patchClusterOrderStorageStatus(ctx, client.ObjectKeyFromObject(co), co.Status); updateErr != nil {
 					log.Error(updateErr, "failed to update ClusterOrder status during teardown", "clusterOrder", co.Name)
 				}
 				return result, nil
@@ -781,6 +920,55 @@ func (r *StorageReconciler) allTenantReconcileRequests(ctx context.Context) []re
 	return requests
 }
 
+// resolveTenantSpecificStorageClasses lists only StorageClasses labeled with the
+// given tenant name, ignoring shared defaults (labeled tenant=Default). Used when
+// AAP is configured and the controller should not fall back to shared defaults.
+// Returns resolved classes and any duplicate messages for tiers with multiple SCs.
+func (r *StorageReconciler) resolveTenantSpecificStorageClasses(
+	ctx context.Context, targetClient client.Client, tenantName string,
+) ([]v1alpha1.ResolvedStorageClass, []string, error) {
+	log := ctrllog.FromContext(ctx)
+	scList := &storagev1.StorageClassList{}
+	if err := targetClient.List(ctx, scList, client.MatchingLabels{osacTenantKey: tenantName}); err != nil {
+		return nil, nil, err
+	}
+	byTier := groupByTier(scList.Items)
+	sortedTiers := make([]string, 0, len(byTier))
+	for tier := range byTier {
+		sortedTiers = append(sortedTiers, tier)
+	}
+	sort.Strings(sortedTiers)
+
+	var resolved []v1alpha1.ResolvedStorageClass
+	var duplicateMessages []string
+	for _, tier := range sortedTiers {
+		scs := byTier[tier]
+		switch len(scs) {
+		case 1:
+			resolved = append(resolved, v1alpha1.ResolvedStorageClass{
+				Name: scs[0].GetName(),
+				Tier: tier,
+			})
+		default:
+			joined, names := joinStorageClassNames(scs)
+			msg := fmt.Sprintf("tier %q: multiple tenant StorageClasses [%s]", tier, joined)
+			log.Info(msg, "tenant", tenantName, "tier", tier, "storageClasses", names)
+			duplicateMessages = append(duplicateMessages, msg)
+		}
+	}
+	return resolved, duplicateMessages, nil
+}
+
+// formatResolvedStorageClasses builds a human-readable condition message
+// listing each resolved tier and its StorageClass name.
+func formatResolvedStorageClasses(classes []v1alpha1.ResolvedStorageClass) string {
+	parts := make([]string, len(classes))
+	for i, sc := range classes {
+		parts[i] = fmt.Sprintf("tier %q: StorageClass %q (tenant-specific)", sc.Tier, sc.Name)
+	}
+	return strings.Join(parts, "; ")
+}
+
 // mapClusterOrderToTenant maps ClusterOrder events to the owning Tenant so the
 // storage controller can evaluate CaaS cluster storage provisioning/teardown.
 func (r *StorageReconciler) mapClusterOrderToTenant(ctx context.Context, obj client.Object) []reconcile.Request {
@@ -814,16 +1002,19 @@ func (r *StorageReconciler) getClusterKubeconfig(ctx context.Context, clusterOrd
 		return nil, nil
 	}
 
+	// HyperShift places the HostedControlPlane in {HostedCluster-namespace}-{HostedCluster-name}.
+	hcpNamespace := ref.Namespace + "-" + ref.HostedClusterName
+
 	hcp := &hypershiftv1beta1.HostedControlPlane{}
 	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: ref.Namespace,
+		Namespace: hcpNamespace,
 		Name:      ref.HostedClusterName,
 	}, hcp); err != nil {
 		if client.IgnoreNotFound(err) != nil {
-			return nil, fmt.Errorf("get HostedControlPlane %s/%s: %w", ref.Namespace, ref.HostedClusterName, err)
+			return nil, fmt.Errorf("get HostedControlPlane %s/%s: %w", hcpNamespace, ref.HostedClusterName, err)
 		}
 		log.Info("HostedControlPlane not found", "clusterOrder", clusterOrder.Name,
-			"namespace", ref.Namespace, "hostedClusterName", ref.HostedClusterName)
+			"namespace", hcpNamespace, "hostedClusterName", ref.HostedClusterName)
 		return nil, nil
 	}
 
@@ -835,14 +1026,14 @@ func (r *StorageReconciler) getClusterKubeconfig(ctx context.Context, clusterOrd
 
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, types.NamespacedName{
-		Namespace: ref.Namespace,
+		Namespace: hcpNamespace,
 		Name:      hcp.Status.KubeConfig.Name,
 	}, secret); err != nil {
 		if client.IgnoreNotFound(err) != nil {
-			return nil, fmt.Errorf("get kubeconfig Secret %s/%s: %w", ref.Namespace, hcp.Status.KubeConfig.Name, err)
+			return nil, fmt.Errorf("get kubeconfig Secret %s/%s: %w", hcpNamespace, hcp.Status.KubeConfig.Name, err)
 		}
 		log.Info("kubeconfig Secret not found", "clusterOrder", clusterOrder.Name,
-			"secret", hcp.Status.KubeConfig.Name, "namespace", ref.Namespace)
+			"secret", hcp.Status.KubeConfig.Name, "namespace", hcpNamespace)
 		return nil, nil
 	}
 
