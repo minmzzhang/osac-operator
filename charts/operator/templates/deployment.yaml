@@ -63,9 +63,9 @@ spec:
             value: {{ .Values.aap.templatePrefix | quote }}
           {{- end }}
           - name: OSAC_FULFILLMENT_SERVER_ADDRESS
-            value: {{ required "fulfillment.serverAddress is required" .Values.fulfillment.serverAddress | quote }}
+            value: {{ .Values.fulfillment.serverAddress | default "fulfillment-internal-api:8001" | quote }}
           - name: OSAC_FULFILLMENT_TOKEN_FILE
-            value: {{ required "fulfillment.tokenFile is required" .Values.fulfillment.tokenFile | quote }}
+            value: {{ .Values.fulfillment.tokenFile | default "/var/run/secrets/kubernetes.io/serviceaccount/token" | quote }}
           - name: OSAC_CLUSTER_ORDER_NAMESPACE
             valueFrom:
               fieldRef:
