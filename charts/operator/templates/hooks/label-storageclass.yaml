@@ -84,7 +84,6 @@ spec:
           echo "Labeling default StorageClass: ${SC}"
           oc label sc "${SC}" osac.openshift.io/tenant=Default osac.openshift.io/storage-tier=default --overwrite
         securityContext:
-          runAsNonRoot: true
           allowPrivilegeEscalation: false
           readOnlyRootFilesystem: true
           capabilities:
