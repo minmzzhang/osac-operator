@@ -286,6 +286,61 @@ var _ = Describe("ClusterOrder FeedbackReconciler", func() {
 		})
 	})
 
+	Context("When reconciling a resource deleted while still in Progressing phase", func() {
+		BeforeEach(func() {
+			co := &osacv1alpha1.ClusterOrder{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      resourceName,
+					Namespace: clusterOrderNS,
+					Labels: map[string]string{
+						osacClusterOrderIDLabel: clusterID,
+					},
+					Finalizers: []string{osacClusterOrderFeedbackFinalizer},
+				},
+				Spec: osacv1alpha1.ClusterOrderSpec{
+					TemplateID: "test_template",
+				},
+			}
+			Expect(k8sClient.Create(testCtx, co)).To(Succeed())
+
+			Expect(k8sClient.Get(testCtx, typeNamespacedName, co)).To(Succeed())
+			co.Status.Phase = osacv1alpha1.ClusterOrderPhaseProgressing
+			Expect(k8sClient.Status().Update(testCtx, co)).To(Succeed())
+
+			Expect(k8sClient.Get(testCtx, typeNamespacedName, co)).To(Succeed())
+			Expect(k8sClient.Delete(testCtx, co)).To(Succeed())
+
+			mockClient.getResponse = newClusterGetResponse()
+			mockClient.updateResponse = &privatev1.ClustersUpdateResponse{}
+		})
+
+		AfterEach(func() {
+			co := &osacv1alpha1.ClusterOrder{}
+			err := k8sClient.Get(testCtx, typeNamespacedName, co)
+			if err == nil {
+				co.Finalizers = nil
+				Expect(k8sClient.Update(testCtx, co)).To(Succeed())
+			}
+		})
+
+		It("should sync Progressing state and still remove finalizer and signal", func() {
+			request := reconcile.Request{
+				NamespacedName: typeNamespacedName,
+			}
+			result, err := reconciler.Reconcile(testCtx, request)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(result.IsZero()).To(BeTrue())
+			Expect(mockClient.updateCalled).To(BeTrue())
+			Expect(mockClient.lastUpdate.GetStatus().GetState()).To(Equal(privatev1.ClusterState_CLUSTER_STATE_PROGRESSING))
+			Expect(mockClient.signalCalled).To(BeTrue())
+			Expect(mockClient.signalID).To(Equal(clusterID))
+
+			updated := &osacv1alpha1.ClusterOrder{}
+			err = k8sClient.Get(testCtx, typeNamespacedName, updated)
+			Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		})
+	})
+
 	Context("When reconciling a resource being deleted with multiple finalizers", func() {
 		BeforeEach(func() {
 			co := &osacv1alpha1.ClusterOrder{
