@@ -210,7 +210,10 @@ func (t *feedbackReconcilerTask) handleUpdate(ctx context.Context) error {
 }
 
 func (t *feedbackReconcilerTask) handleDelete(ctx context.Context) error {
-	return t.syncState(ctx)
+	if err := t.syncState(ctx); err != nil {
+		return err
+	}
+	return t.syncPhaseDeleting()
 }
 
 func (t *feedbackReconcilerTask) syncState(ctx context.Context) error {

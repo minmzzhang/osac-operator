@@ -323,7 +323,7 @@ var _ = Describe("ClusterOrder FeedbackReconciler", func() {
 			}
 		})
 
-		It("should sync Progressing state and still remove finalizer and signal", func() {
+		It("should force DELETING state even from Progressing phase and remove finalizer", func() {
 			request := reconcile.Request{
 				NamespacedName: typeNamespacedName,
 			}
@@ -331,7 +331,7 @@ var _ = Describe("ClusterOrder FeedbackReconciler", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(result.IsZero()).To(BeTrue())
 			Expect(mockClient.updateCalled).To(BeTrue())
-			Expect(mockClient.lastUpdate.GetStatus().GetState()).To(Equal(privatev1.ClusterState_CLUSTER_STATE_PROGRESSING))
+			Expect(mockClient.lastUpdate.GetStatus().GetState()).To(Equal(privatev1.ClusterState_CLUSTER_STATE_DELETING))
 			Expect(mockClient.signalCalled).To(BeTrue())
 			Expect(mockClient.signalID).To(Equal(clusterID))
 
